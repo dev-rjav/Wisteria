@@ -10,19 +10,14 @@ use serde::{Deserialize, Serialize};
 
 /// How aggressively the (optional) LLM formatter cleans up the raw transcript.
 /// `Off` skips the formatter stage entirely — the default until the M3 stage lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FormatLevel {
+    #[default]
     Off,
     Light,
     Medium,
     High,
-}
-
-impl Default for FormatLevel {
-    fn default() -> Self {
-        FormatLevel::Off
-    }
 }
 
 /// Top-level user configuration. Missing fields fall back to [`Default`] on load, so upgrades
