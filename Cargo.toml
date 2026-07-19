@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/wisteria-core", "crates/wisteria-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dev-rjav/Wisteria"
+authors = ["dev-rjav"]
+
+# Shared dependency versions, referenced from member crates via `<dep>.workspace = true`.
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+crossbeam-channel = "0.5"
+
+# Release profile tuned for the warm-model daemon: optimize, keep symbols slim.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,36 @@
+[package]
+name = "wisteria-core"
+description = "Wisteria dictation pipeline: audio capture, hotkey, ASR, formatting, paste."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+crossbeam-channel.workspace = true
+
+# Audio capture (cross-platform: WASAPI / ALSA / CoreAudio).
+cpal = "0.15"
+
+# Clipboard read/write + synthetic keystroke injection for paste delivery.
+arboard = "3"
+enigo = "0.2"
+
+# Global hold-to-talk key events. rustdesk fork (what Handy uses) — reliable key up/down
+# across Windows/Linux(X11)/macOS. See plan.md M2.3.
+rdev = { git = "https://github.com/rustdesk-org/rdev" }
+
+# Model downloads (blocking HTTP) + integrity check. rustls avoids an OpenSSL system dep.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "stream"] }
+sha2 = "0.10"
+
+# ASR engine. `onnx` feature => Parakeet TDT via ONNX Runtime (ort pulls prebuilt binaries,
+# so no CMake needed). Whisper (`whisper-cpp`) is deferred — see plan.md.
+transcribe-rs = { version = "0.3", default-features = false, features = ["onnx"] }
