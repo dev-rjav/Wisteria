@@ -1,0 +1,23 @@
+# Build artifacts
+target/
+dist/
+node_modules/
+*.log
+
+# Model weights (downloaded at runtime, never committed)
+models/
+*.gguf
+*.onnx
+*.bin
+
+# Local data
+*.sqlite
+*.sqlite3
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
