@@ -25,7 +25,7 @@ pub enum FormatLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Push-to-talk key name (matches an `rdev::Key` variant, e.g. `"ControlRight"`).
+    /// Push-to-talk key or `+`-separated combo (e.g. `"ControlRight"`, `"Win+Alt"`).
     pub ptt_key: String,
     /// ASR model identifier (see [`crate::models`]).
     pub model: String,
@@ -40,7 +40,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            ptt_key: "ControlRight".to_string(),
+            ptt_key: "Win+Alt".to_string(),
             model: "parakeet-tdt-0.6b-v3-int8".to_string(),
             language: "auto".to_string(),
             format: FormatLevel::Off,
