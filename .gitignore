@@ -21,3 +21,10 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+
+# Local-only planning/reference docs (kept out of the public repo).
+# Only README.md and models-research.md are tracked.
+/CLAUDE.md
+/plan.md
+/project.md
+/research.md
