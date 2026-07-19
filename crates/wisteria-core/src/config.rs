@@ -40,7 +40,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            ptt_key: "Win+Alt".to_string(),
+            ptt_key: "F8".to_string(),
             model: "parakeet-tdt-0.6b-v3-int8".to_string(),
             language: "auto".to_string(),
             format: FormatLevel::Off,
