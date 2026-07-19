@@ -28,7 +28,7 @@ enigo = "0.2"
 rdev = { git = "https://github.com/rustdesk-org/rdev" }
 
 # Model downloads (blocking HTTP) + integrity check. rustls avoids an OpenSSL system dep.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 sha2 = "0.10"
 
 # Extract the Parakeet model tarball (.tar.gz) fetched on first run.

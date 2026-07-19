@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 use wisteria_core::asr::Asr;
 use wisteria_core::audio::Recorder;
+use wisteria_core::format::Formatter;
 use wisteria_core::hotkey::{self, PttEvent};
 use wisteria_core::{models, paste, Config};
 
@@ -37,6 +38,9 @@ fn main() -> Result<()> {
     let mut asr = Asr::load(&models.asr_dir, &config.language)?;
     info!(ms = warm.elapsed().as_millis(), "ASR engine warm");
 
+    // Optional transcript cleanup (Ollama). None = disabled or unavailable → raw transcripts.
+    let formatter = Formatter::new(&config);
+
     // Keep the microphone stream open ("warm").
     let recorder = Recorder::new(&config.input_device)?;
 
@@ -60,7 +64,7 @@ fn main() -> Result<()> {
                 let capture_ms = cap.elapsed().as_millis();
 
                 let asr_start = Instant::now();
-                let text = match asr.transcribe(&samples) {
+                let raw = match asr.transcribe(&samples) {
                     Ok(text) => text,
                     Err(e) => {
                         error!(%e, "transcription failed");
@@ -69,9 +73,20 @@ fn main() -> Result<()> {
                 };
                 let asr_ms = asr_start.elapsed().as_millis();
 
-                if text.is_empty() {
+                if raw.is_empty() {
                     info!(capture_ms, asr_ms, "no speech detected");
                     continue;
+                }
+
+                // Optional LLM cleanup; falls back to `raw` internally on any failure.
+                let fmt_start = Instant::now();
+                let text = match &formatter {
+                    Some(f) => f.clean(&raw),
+                    None => raw.clone(),
+                };
+                let format_ms = fmt_start.elapsed().as_millis();
+                if text != raw {
+                    info!(raw = %raw, cleaned = %text, "formatted transcript");
                 }
 
                 let paste_start = Instant::now();
@@ -81,6 +96,7 @@ fn main() -> Result<()> {
                 info!(
                     capture_ms,
                     asr_ms,
+                    format_ms,
                     paste_ms = paste_start.elapsed().as_millis(),
                     text = %text,
                     "transcript pasted"

@@ -34,10 +34,14 @@ pub struct Config {
     /// Input device name (case-insensitive substring match). Empty = auto-select, preferring a
     /// real microphone over loopback/"Stereo Mix" devices.
     pub input_device: String,
-    /// Formatter intensity. `Off` until the M3 formatter stage is wired.
+    /// Formatter intensity. `Off` skips the LLM cleanup stage entirely.
     pub format: FormatLevel,
-    /// Localhost port the bundled `llama-server` listens on (formatter stage, M3).
-    pub llama_port: u16,
+    /// Base URL of the Ollama server used for transcript cleanup.
+    pub formatter_url: String,
+    /// Ollama model tag used to clean transcripts (e.g. `"qwen3:0.6b"`).
+    pub formatter_model: String,
+    /// Max time (ms) to wait for the formatter before falling back to the raw transcript.
+    pub formatter_timeout_ms: u64,
 }
 
 impl Default for Config {
@@ -47,8 +51,10 @@ impl Default for Config {
             model: "parakeet-tdt-0.6b-v3-int8".to_string(),
             language: "auto".to_string(),
             input_device: String::new(),
-            format: FormatLevel::Off,
-            llama_port: 8080,
+            format: FormatLevel::Medium,
+            formatter_url: "http://127.0.0.1:11434".to_string(),
+            formatter_model: "qwen3:0.6b".to_string(),
+            formatter_timeout_ms: 8000,
         }
     }
 }
@@ -113,7 +119,8 @@ mod tests {
         let text = toml::to_string_pretty(&config).unwrap();
         let parsed: Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.ptt_key, config.ptt_key);
-        assert_eq!(parsed.format, FormatLevel::Off);
+        assert_eq!(parsed.format, config.format);
+        assert_eq!(parsed.formatter_model, config.formatter_model);
     }
 
     #[test]
