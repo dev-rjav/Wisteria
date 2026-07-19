@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     info!(ms = warm.elapsed().as_millis(), "ASR engine warm");
 
     // Keep the microphone stream open ("warm").
-    let recorder = Recorder::new()?;
+    let recorder = Recorder::new(&config.input_device)?;
 
     // Global push-to-talk listener.
     let ptt = hotkey::spawn(&config.ptt_key)?;

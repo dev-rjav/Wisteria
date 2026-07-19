@@ -31,6 +31,9 @@ pub struct Config {
     pub model: String,
     /// Spoken language hint, or `"auto"`.
     pub language: String,
+    /// Input device name (case-insensitive substring match). Empty = auto-select, preferring a
+    /// real microphone over loopback/"Stereo Mix" devices.
+    pub input_device: String,
     /// Formatter intensity. `Off` until the M3 formatter stage is wired.
     pub format: FormatLevel,
     /// Localhost port the bundled `llama-server` listens on (formatter stage, M3).
@@ -43,6 +46,7 @@ impl Default for Config {
             ptt_key: "F8".to_string(),
             model: "parakeet-tdt-0.6b-v3-int8".to_string(),
             language: "auto".to_string(),
+            input_device: String::new(),
             format: FormatLevel::Off,
             llama_port: 8080,
         }
