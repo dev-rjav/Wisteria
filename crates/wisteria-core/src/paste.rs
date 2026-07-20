@@ -20,6 +20,19 @@ const PASTE_MODIFIER: Key = Key::Meta;
 #[cfg(not(target_os = "macos"))]
 const PASTE_MODIFIER: Key = Key::Control;
 
+/// The "V" key of the paste chord. This must be a real virtual key, NOT a Unicode character:
+/// on Windows `Key::Unicode('v')` uses `KEYEVENTF_UNICODE` and on macOS it sets the event's
+/// Unicode string — both **bypass the held modifier**, so the target receives a literal "v"
+/// character and the Ctrl/⌘+V shortcut never fires (the symptom: only "v" gets typed). Sending
+/// the platform virtual-key code respects the modifier. On Linux the X11 keysym path already
+/// honors modifiers, so `Key::Unicode` is fine there.
+#[cfg(target_os = "windows")]
+const PASTE_V: Key = Key::Other(0x56); // VK_V
+#[cfg(target_os = "macos")]
+const PASTE_V: Key = Key::Other(0x09); // kVK_ANSI_V
+#[cfg(target_os = "linux")]
+const PASTE_V: Key = Key::Unicode('v');
+
 /// Paste `text` at the cursor, preserving the user's existing clipboard.
 pub fn paste_text(text: &str) -> Result<()> {
     if text.is_empty() {
@@ -57,7 +70,9 @@ fn synth_paste() -> Result<()> {
     enigo
         .key(PASTE_MODIFIER, Direction::Press)
         .map_err(|e| anyhow::anyhow!("press modifier: {e}"))?;
-    let v_result = enigo.key(Key::Unicode('v'), Direction::Click);
+    // Let the target register the modifier before the V keystroke arrives.
+    std::thread::sleep(Duration::from_millis(20));
+    let v_result = enigo.key(PASTE_V, Direction::Click);
     // Always release the modifier, even if the 'v' click failed.
     let release = enigo.key(PASTE_MODIFIER, Direction::Release);
     v_result.map_err(|e| anyhow::anyhow!("press v: {e}"))?;
