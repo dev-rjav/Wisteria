@@ -134,6 +134,16 @@ impl Recorder {
     }
 }
 
+/// Names of all available input devices (for a settings picker). Best-effort: returns an empty
+/// list if the host cannot be queried.
+pub fn input_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// True if `name` looks like a system-audio loopback endpoint rather than a microphone.
 fn is_loopback(name: &str) -> bool {
     let n = name.to_lowercase();

@@ -44,7 +44,7 @@ pub fn spawn(ptt_key: &str) -> Result<Receiver<PttEvent>> {
 
 /// Tracks how many of the target keys are currently held and whether the chord is active,
 /// deciding for each event whether to emit a transition and whether to consume the key.
-struct ChordState {
+pub struct ChordState {
     targets: Vec<Key>,
     /// Bitmask of held target keys (bit `i` ↔ `targets[i]`).
     held: u32,
@@ -54,7 +54,7 @@ struct ChordState {
 }
 
 impl ChordState {
-    fn new(targets: Vec<Key>) -> Self {
+    pub fn new(targets: Vec<Key>) -> Self {
         let n = targets.len().min(32);
         let all = if n == 32 { u32::MAX } else { (1u32 << n) - 1 };
         ChordState {
@@ -67,7 +67,7 @@ impl ChordState {
 
     /// Update state for `event_type`; returns `(transition, is_target)`. `is_target` means the
     /// key belongs to the PTT binding and should be consumed by the caller.
-    fn update(&mut self, event_type: &EventType) -> (Option<PttEvent>, bool) {
+    pub fn update(&mut self, event_type: &EventType) -> (Option<PttEvent>, bool) {
         match *event_type {
             EventType::KeyPress(k) => {
                 let mut is_target = false;
@@ -165,7 +165,7 @@ fn warn_if_modifier(targets: &[Key]) {
 }
 
 /// Parse a `+`-separated key combination. Empty/invalid specs fall back to F8.
-fn parse_combo(spec: &str) -> Vec<Key> {
+pub fn parse_combo(spec: &str) -> Vec<Key> {
     let keys: Vec<Key> = spec
         .split('+')
         .filter_map(|tok| {
