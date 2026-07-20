@@ -56,8 +56,10 @@ async function layout() {
   try {
     // Bottom-anchored: keep the bottom edge fixed so the pill grows upward, never jumping under
     // the cursor (which would bounce hover state).
+    // Sit well clear of the taskbar. screen.availHeight already excludes it, but a small gap
+    // still overlapped, so keep a comfortable margin above the work-area bottom.
     const x = Math.round((screen.availWidth - w) / 2);
-    const y = Math.round(screen.availHeight - h - 16);
+    const y = Math.round(screen.availHeight - h - 52);
     await win.setSize(new LogicalSize(w, h));
     await win.setPosition(new LogicalPosition(x, y));
   } catch (e) { lastW = 0; lastH = 0; /* force retry next time */ }

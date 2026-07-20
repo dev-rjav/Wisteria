@@ -200,10 +200,12 @@ fn position_dock(app: &AppHandle) {
             let size = monitor.size();
             let lw = size.width as f64 / scale;
             let lh = size.height as f64 / scale;
-            // Matches the dock's tiny idle window (see SIZES.idle in dock.js).
+            // Matches the dock's tiny idle window (see SIZES.idle in dock.js). This uses the full
+            // monitor height, so leave room for the taskbar (~48px) plus a gap; dock.js refines
+            // the position using the work area once the webview loads.
             let (win_w, win_h) = (96.0, 34.0);
             let x = (lw - win_w) / 2.0;
-            let y = lh - win_h - 16.0;
+            let y = lh - win_h - 100.0;
             let _ = dock.set_position(tauri::LogicalPosition::new(x, y));
         }
         let _ = dock.set_always_on_top(true);
