@@ -4,6 +4,8 @@
 //! PATH). Used to populate the formatting-model picker with what's installed vs. downloadable.
 
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -141,8 +143,10 @@ pub fn model_list(installed: &[TagInfo]) -> Vec<ModelEntry> {
 }
 
 /// Pull `model` from Ollama, invoking `on_progress` for each streamed status line. Blocks until
-/// the pull finishes or errors; run on a background thread.
-pub fn pull(url: &str, model: &str, mut on_progress: impl FnMut(PullProgress)) {
+/// the pull finishes, errors, or `cancel` is set. Run on a background thread. When cancelled, the
+/// streaming connection is dropped (which aborts the transfer) and a final `cancelled` progress
+/// with `done: true` is emitted.
+pub fn pull(url: &str, model: &str, cancel: Arc<AtomicBool>, mut on_progress: impl FnMut(PullProgress)) {
     let url = url.trim_end_matches('/');
     let body = serde_json::json!({ "name": model, "stream": true });
 
@@ -169,6 +173,11 @@ pub fn pull(url: &str, model: &str, mut on_progress: impl FnMut(PullProgress)) {
 
     let reader = BufReader::new(resp);
     for line in reader.lines() {
+        // Stop and drop the connection if the user cancelled.
+        if cancel.load(Ordering::SeqCst) {
+            on_progress(cancelled(model));
+            return;
+        }
         let line = match line {
             Ok(l) => l,
             Err(e) => {
@@ -221,6 +230,16 @@ fn err(model: &str, msg: String) -> PullProgress {
         percent: 0.0,
         done: true,
         error: Some(msg),
+    }
+}
+
+fn cancelled(model: &str) -> PullProgress {
+    PullProgress {
+        model: model.to_string(),
+        status: "cancelled".into(),
+        percent: 0.0,
+        done: true,
+        error: Some("cancelled".into()),
     }
 }
 

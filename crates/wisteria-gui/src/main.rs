@@ -9,7 +9,9 @@
 
 mod ollama;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -28,6 +30,8 @@ struct AppState {
     gui_state_path: PathBuf,
     /// Last known engine phase tag, so the UI can query it on load.
     phase: Arc<Mutex<String>>,
+    /// Cancel flags for in-flight model pulls, keyed by model name.
+    pulls: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 // ---------- config ----------
@@ -122,11 +126,33 @@ fn pull_model(app: AppHandle, state: State<AppState>, name: String) {
     let url = Config::load_or_create(&state.config_path)
         .unwrap_or_default()
         .formatter_url;
+    // Register a fresh cancel flag for this pull (replacing any stale one for the same model).
+    let cancel = Arc::new(AtomicBool::new(false));
+    state
+        .pulls
+        .lock()
+        .unwrap()
+        .insert(name.clone(), Arc::clone(&cancel));
+
     std::thread::spawn(move || {
-        ollama::pull(&url, &name, |progress| {
+        let cancel_for_pull = Arc::clone(&cancel);
+        ollama::pull(&url, &name, cancel_for_pull, |progress| {
             let _ = app.emit("model-pull", progress);
         });
+        // Clean up the registry entry once the pull ends (success, error, or cancel).
+        if let Some(state) = app.try_state::<AppState>() {
+            state.pulls.lock().unwrap().remove(&name);
+        }
     });
+}
+
+/// Cancel an in-flight model download by setting its cancel flag; the pull thread drops the
+/// connection and emits a final `cancelled` progress.
+#[tauri::command]
+fn cancel_pull(state: State<AppState>, name: String) {
+    if let Some(flag) = state.pulls.lock().unwrap().get(&name) {
+        flag.store(true, Ordering::SeqCst);
+    }
 }
 
 // ---------- engine ----------
@@ -281,6 +307,7 @@ fn main() {
                 config_path,
                 gui_state_path,
                 phase: Arc::clone(&phase),
+                pulls: Mutex::new(HashMap::new()),
             });
 
             // Engine event sink → webview (global emit reaches both windows) + phase cache.
@@ -312,6 +339,7 @@ fn main() {
             list_formatter_models,
             list_transcription_models,
             pull_model,
+            cancel_pull,
             engine_status,
             engine_set_enabled,
             get_gui_state,
