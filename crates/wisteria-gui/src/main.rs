@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tracing::info;
 
 use wisteria_core::config::Config;
@@ -165,6 +167,74 @@ fn save_gui_state(state: State<AppState>, data: serde_json::Value) -> Result<(),
     std::fs::write(&state.gui_state_path, text).map_err(|e| e.to_string())
 }
 
+/// Show and focus the main window (from the tray).
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Toggle dictation on/off (from the tray).
+fn toggle_engine(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut guard = state.engine.lock().unwrap();
+    if let Some(e) = guard.as_mut() {
+        let now = !e.is_enabled();
+        e.set_enabled(now);
+    }
+}
+
+/// Position the frameless dock at the bottom-center of the primary monitor.
+fn position_dock(app: &AppHandle) {
+    if let Some(dock) = app.get_webview_window("dock") {
+        if let Ok(Some(monitor)) = dock.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let size = monitor.size();
+            let lw = size.width as f64 / scale;
+            let lh = size.height as f64 / scale;
+            let (win_w, win_h) = (240.0, 64.0);
+            let x = (lw - win_w) / 2.0;
+            let y = lh - win_h - 48.0;
+            let _ = dock.set_position(tauri::LogicalPosition::new(x, y));
+        }
+        let _ = dock.set_always_on_top(true);
+    }
+}
+
+/// Build the system-tray icon + menu so Wisteria keeps running in the background.
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Open Wisteria", true, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", "Enable / disable dictation", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Wisteria", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &toggle, &quit])?;
+
+    TrayIconBuilder::with_id("wisteria-tray")
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("Wisteria — hold your hotkey to dictate")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main(app),
+            "toggle" => toggle_engine(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -175,7 +245,17 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Closing a window hides it (app keeps running in the tray); it never quits the app.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
+            let handle = app.handle().clone();
+            setup_tray(&handle)?;
+            position_dock(&handle);
             let data_dir = Config::app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
             let config_path = data_dir.join("config.toml");
             let gui_state_path = data_dir.join("gui-state.json");
@@ -183,8 +263,7 @@ fn main() {
 
             let config = Config::load_or_create(&config_path).unwrap_or_default();
 
-            // Engine event sink → webview + phase cache.
-            let handle = app.handle().clone();
+            // Engine event sink → webview (global emit reaches both windows) + phase cache.
             let phase_for_sink = Arc::clone(&phase);
             let sink: EventSink = Arc::new(move |ev: EngineEvent| {
                 let payload = match &ev {
@@ -223,6 +302,12 @@ fn main() {
             get_gui_state,
             save_gui_state,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Wisteria");
+        .build(tauri::generate_context!())
+        .expect("error while building Wisteria")
+        .run(|_app, event| {
+            // Keep running when windows are hidden; only the tray "Quit" exits (via app.exit).
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }

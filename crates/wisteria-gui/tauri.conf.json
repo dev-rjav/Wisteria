@@ -10,6 +10,8 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
+        "url": "index.html",
         "title": "Wisteria — Open Source Voice Workspace",
         "width": 1280,
         "height": 820,
@@ -18,7 +20,23 @@
         "resizable": true,
         "decorations": false,
         "transparent": false,
-        "center": true
+        "center": true,
+        "visible": true
+      },
+      {
+        "label": "dock",
+        "url": "dock.html",
+        "title": "Wisteria Dock",
+        "width": 240,
+        "height": 64,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "shadow": false,
+        "visible": true
       }
     ],
     "security": {

@@ -1,14 +1,21 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions for the Wisteria window and events.",
-  "windows": ["main"],
+  "description": "Core permissions for the Wisteria main + dock windows.",
+  "windows": ["main", "dock"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
+    "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",
+    "core:window:allow-hide",
+    "core:window:allow-show",
     "core:window:allow-close",
+    "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-always-on-top",
     "core:event:default",
     "opener:default"
   ]
