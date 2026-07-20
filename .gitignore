@@ -14,6 +14,9 @@ models/
 *.sqlite
 *.sqlite3
 
+# Tauri generated schemas (regenerated at build)
+crates/wisteria-gui/gen/
+
 # OS noise
 .DS_Store
 Thumbs.db
@@ -28,3 +31,6 @@ Thumbs.db
 /plan.md
 /project.md
 /research.md
+
+# Local-only research / model benchmarking (not pushed).
+/research/
