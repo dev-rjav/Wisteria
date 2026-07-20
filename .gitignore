@@ -35,3 +35,6 @@ Thumbs.db
 
 # Local-only research / model benchmarking (not pushed).
 /research/
+
+# Local-only installer script (not pushed).
+/install-wisteria.ps1
