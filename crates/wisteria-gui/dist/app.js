@@ -24,6 +24,8 @@ const state = {
   settingsOpen: false,
   recordKeys: [],    // tokens captured during hotkey recording, in press order
   recordDown: null,  // Set of currently-held e.code values while recording
+  scratchPasteGuard: false,   // swallow the engine's dictation paste while on the Scratchpad
+  scratchPasteGuardTimer: null,
   openDD: null,
   formatterModels: { reachable: false, selected: '', models: [] },
   transcriptionModels: [],
@@ -95,6 +97,9 @@ async function listenEngine() {
     const p = e.payload;
     if (p.kind === 'phase') {
       state.phase = p.phase;
+      // A dictation is being transcribed → its paste is imminent. On the Scratchpad we insert the
+      // text ourselves from the transcript event, so arm a guard to swallow that synthetic paste.
+      if (p.phase === 'processing' && state.active === 'Scratchpad') armScratchPasteGuard();
       if (state.active === 'Dictation') { renderMain(); renderRight(); }
     } else if (p.kind === 'transcript') {
       addTranscript(p.clean, p.words);
@@ -112,6 +117,34 @@ function addTranscript(text, words) {
   state.sessionWords += (words || 0);
   if (state.active === 'Dictation') { renderMain(); renderRight(); }
   if (state.active === 'Insights') renderMain();
+  if (state.active === 'Scratchpad') appendToScratch(text);
+}
+
+function armScratchPasteGuard() {
+  state.scratchPasteGuard = true;
+  clearTimeout(state.scratchPasteGuardTimer);
+  // Clear if no paste arrives (e.g. the textarea wasn't focused, so no paste event fired).
+  state.scratchPasteGuardTimer = setTimeout(() => { state.scratchPasteGuard = false; }, 5000);
+}
+
+function updateScratchCount() {
+  const el = document.querySelector('.scratch-count');
+  if (!el) return;
+  const v = (state.gui.scratch || '').trim();
+  el.textContent = (v ? v.split(/\s+/).length : 0) + ' WORDS';
+}
+
+// Append a dictated transcript to the Scratchpad, delivered via the engine event (not the OS
+// paste), so it works regardless of focus. Keeps the caret/scroll at the end.
+function appendToScratch(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (!t) return;
+  const cur = state.gui.scratch || '';
+  const sep = cur && !/\s$/.test(cur) ? ' ' : '';
+  state.gui.scratch = cur + sep + t;
+  saveGui();
+  const ta = $('scratch');
+  if (ta) { ta.value = state.gui.scratch; ta.scrollTop = ta.scrollHeight; updateScratchCount(); }
 }
 
 /* ---------- render ---------- */
@@ -318,7 +351,12 @@ function viewScratchpad() {
 }
 function wireScratchpad() {
   const ta = $('scratch');
-  ta.oninput = () => { state.gui.scratch = ta.value; debouncedSaveGui(); const wc = ta.value.trim() ? ta.value.trim().split(/\s+/).length : 0; document.querySelector('.scratch-count').textContent = wc + ' WORDS'; };
+  ta.oninput = () => { state.gui.scratch = ta.value; debouncedSaveGui(); updateScratchCount(); };
+  // Swallow the engine's dictation paste — we insert that text via the transcript event instead,
+  // so letting the OS Ctrl+V also land here would double it. Manual pastes pass through untouched.
+  ta.addEventListener('paste', (e) => {
+    if (state.scratchPasteGuard) { e.preventDefault(); state.scratchPasteGuard = false; }
+  });
 }
 
 /* ---------- persistence ---------- */
