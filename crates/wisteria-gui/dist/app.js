@@ -330,9 +330,12 @@ function saveConfig() { clearTimeout(saveCfgTimer); saveCfgTimer = setTimeout(()
 async function openSettings() {
   state.settingsOpen = true;
   $('settings-overlay').hidden = false;
-  await refreshModels();
-  renderSettings();
   document.addEventListener('keydown', hotkeyCapture, true);
+  // Render the modal shell immediately (so it's never an empty blocking box, and Close always
+  // works), then fill in model lists — a failed/slow fetch must not leave the modal blank.
+  renderSettings();
+  await refreshModels().catch((e) => console.error('refreshModels failed:', e));
+  if (state.settingsOpen) renderSettings();
 }
 function closeSettings() {
   state.settingsOpen = false; state.recording = false; state.openDD = null;
@@ -341,8 +344,8 @@ function closeSettings() {
 }
 
 async function refreshModels() {
-  state.formatterModels = await invoke('list_formatter_models') || { reachable: false, selected: '', models: [] };
-  state.transcriptionModels = await invoke('list_transcription_models') || [];
+  state.formatterModels = await safeInvoke('list_formatter_models', undefined, { reachable: false, selected: '', models: [] });
+  state.transcriptionModels = await safeInvoke('list_transcription_models', undefined, []);
 }
 
 function renderSettings() {
