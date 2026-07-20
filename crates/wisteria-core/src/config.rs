@@ -42,6 +42,9 @@ pub struct Config {
     pub formatter_model: String,
     /// Max time (ms) to wait for the formatter before falling back to the raw transcript.
     pub formatter_timeout_ms: u64,
+    /// Custom formatter system prompt. Empty = use the built-in default
+    /// ([`crate::format::default_prompt`]). Editable from the app's Settings.
+    pub formatter_prompt: String,
 }
 
 impl Default for Config {
@@ -55,6 +58,7 @@ impl Default for Config {
             formatter_url: "http://127.0.0.1:11434".to_string(),
             formatter_model: "qwen3:1.7b".to_string(),
             formatter_timeout_ms: 20000,
+            formatter_prompt: String::new(),
         }
     }
 }
