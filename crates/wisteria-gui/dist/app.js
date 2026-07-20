@@ -22,6 +22,8 @@ const state = {
   recording: false,  // hotkey-recorder mode
   timer: { seconds: 0, handle: null },
   settingsOpen: false,
+  recordKeys: [],    // tokens captured during hotkey recording, in press order
+  recordDown: null,  // Set of currently-held e.code values while recording
   openDD: null,
   formatterModels: { reachable: false, selected: '', models: [] },
   transcriptionModels: [],
@@ -331,6 +333,7 @@ async function openSettings() {
   state.settingsOpen = true;
   $('settings-overlay').hidden = false;
   document.addEventListener('keydown', hotkeyCapture, true);
+  document.addEventListener('keyup', hotkeyCapture, true);
   // Render the modal shell immediately (so it's never an empty blocking box, and Close always
   // works), then fill in model lists — a failed/slow fetch must not leave the modal blank.
   renderSettings();
@@ -339,8 +342,10 @@ async function openSettings() {
 }
 function closeSettings() {
   state.settingsOpen = false; state.recording = false; state.openDD = null;
+  state.recordKeys = []; state.recordDown = null;
   $('settings-overlay').hidden = true;
   document.removeEventListener('keydown', hotkeyCapture, true);
+  document.removeEventListener('keyup', hotkeyCapture, true);
 }
 
 async function refreshModels() {
@@ -419,7 +424,12 @@ function renderSettings() {
   // wire
   $('set-close').onclick = closeSettings;
   $('settings-overlay').onclick = (e) => { if (e.target === $('settings-overlay')) closeSettings(); };
-  $('btn-rec').onclick = () => { state.recording = !state.recording; renderSettings(); };
+  $('btn-rec').onclick = () => {
+    state.recording = !state.recording;
+    state.recordKeys = [];               // start each recording from a clean slate
+    state.recordDown = new Set();
+    renderSettings();
+  };
   $('coffee').onclick = (e) => { e.preventDefault(); openUrl('https://github.com/dev-rjav/Wisteria'); };
 
   renderDeviceDD();
@@ -541,29 +551,59 @@ function onPullProgress(p) {
   }
 }
 
-/* hotkey recorder: capture a combo while recording */
+/* Map a physical key (e.code) to a token the Rust side (hotkey::parse_key) understands. Only keys
+   that can serve as a global push-to-talk binding are accepted — modifiers, function keys, and a
+   few standalone keys. Everything else (letters/digits) returns null and is ignored, since the
+   listener consumes the bound key globally and grabbing a letter would break normal typing. */
+function codeToToken(code) {
+  if (/^F([1-9]|1[0-2])$/.test(code)) return code;      // F1..F12
+  return ({
+    ControlLeft: 'ControlLeft', ControlRight: 'ControlRight',
+    AltLeft: 'Alt', AltRight: 'AltGr',
+    ShiftLeft: 'ShiftLeft', ShiftRight: 'ShiftRight',
+    MetaLeft: 'Win', MetaRight: 'MetaRight',
+    Space: 'Space', Tab: 'Tab', CapsLock: 'CapsLock',
+  })[code] || null;
+}
+
+// Human label for a captured token (Win / Ctrl / Alt / F8 …), matching hotkeyCaps().
+function displayKey(tok) {
+  return tok.replace(/^Meta.*/i, 'Win').replace(/^Control.*/i, 'Ctrl').replace(/Left|Right/i, '');
+}
+
+function updateHotkeyPreview() {
+  const box = $('hotkey-box'); if (!box) return;
+  const caps = state.recordKeys.map(displayKey);
+  box.innerHTML = caps.length
+    ? caps.map((k, i) => (i ? '<span class="hotkey-plus">+</span>' : '') + `<span class="hotkey-cap">${esc(k)}</span>`).join('')
+    : '<span class="hotkey-wait">press keys…</span>';
+}
+
+/* Hotkey recorder: accumulate the actual keys pressed (by physical e.code), then finalize when
+   they're ALL released. This records exactly what you held — no stale modifier flags, and combos
+   of any length are captured, not just "modifiers + one key". */
 function hotkeyCapture(e) {
   if (!state.recording) return;
   e.preventDefault(); e.stopPropagation();
-  const mods = [];
-  if (e.ctrlKey) mods.push('Ctrl');
-  if (e.metaKey) mods.push('Win');
-  if (e.altKey) mods.push('Alt');
-  if (e.shiftKey) mods.push('Shift');
-  const k = e.key;
-  let main = null;
-  if (!['Control', 'Meta', 'Alt', 'Shift'].includes(k)) {
-    if (k === ' ') main = 'Space';
-    else if (/^F\d{1,2}$/.test(k)) main = k;
-    else if (k.length === 1) main = k.toUpperCase();
-    else main = k;
-  }
-  const keys = [...mods];
-  if (main) keys.push(main);
-  if (keys.length) {
-    state.config.ptt_key = keys.join('+');
-    if (main) { state.recording = false; saveConfig(); }
-    renderSettings();
+  if (!state.recordDown) state.recordDown = new Set();
+
+  if (e.type === 'keydown') {
+    if (e.repeat) return;                       // ignore OS auto-repeat
+    const tok = codeToToken(e.code);
+    if (!tok) return;                           // unsupported key for a global binding
+    if (!state.recordKeys.includes(tok)) state.recordKeys.push(tok);
+    state.recordDown.add(e.code);
+    updateHotkeyPreview();
+  } else if (e.type === 'keyup') {
+    state.recordDown.delete(e.code);
+    // All keys released and we captured at least one → that's the combo.
+    if (state.recordDown.size === 0 && state.recordKeys.length) {
+      state.config.ptt_key = state.recordKeys.join('+');
+      state.recording = false;
+      state.recordDown = new Set();
+      saveConfig();
+      renderSettings();
+    }
   }
 }
 
