@@ -13,12 +13,11 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 /* ---------- app state ---------- */
 const state = {
   config: null,
-  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', transforms: null, scratch: '' },
+  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', transforms: null, scratch: '', history: [], totalWords: 0, totalDictations: 0 },
   active: 'Dictation',
   phase: 'warming',
   enabled: true,
-  history: [],       // { time, text }
-  sessionWords: 0,
+  history: [],       // { time, text } — working copy, persisted in gui.history
   recording: false,  // hotkey-recorder mode
   timer: { seconds: 0, handle: null },
   settingsOpen: false,
@@ -59,6 +58,10 @@ async function init() {
     const gui = await safeInvoke('get_gui_state', undefined, {});
     Object.assign(state.gui, gui);
     if (!state.gui.transforms) state.gui.transforms = DEFAULT_TRANSFORMS.map((t) => ({ ...t }));
+    // Restore persisted history/counters so they survive restarts.
+    state.history = Array.isArray(state.gui.history) ? state.gui.history : [];
+    if (typeof state.gui.totalWords !== 'number') state.gui.totalWords = 0;
+    if (typeof state.gui.totalDictations !== 'number') state.gui.totalDictations = 0;
 
     const status = await safeInvoke('engine_status', undefined, { enabled: true, phase: 'idle' });
     state.enabled = status.enabled;
@@ -110,11 +113,18 @@ async function listenEngine() {
   await listen('model-pull', (e) => onPullProgress(e.payload));
 }
 
+const HISTORY_CAP = 500;   // keep the on-disk history bounded
+
 function addTranscript(text, words) {
   const now = new Date();
   const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   state.history.unshift({ time, text });
-  state.sessionWords += (words || 0);
+  if (state.history.length > HISTORY_CAP) state.history.length = HISTORY_CAP;
+  // Persist history + all-time counters so they survive restarts.
+  state.gui.history = state.history;
+  state.gui.totalWords = (state.gui.totalWords || 0) + (words || 0);
+  state.gui.totalDictations = (state.gui.totalDictations || 0) + 1;
+  saveGui();
   if (state.active === 'Dictation') { renderMain(); renderRight(); }
   if (state.active === 'Insights') renderMain();
   if (state.active === 'Scratchpad') appendToScratch(text);
@@ -180,8 +190,8 @@ function renderRight() {
 
 function statList() {
   return [
-    { value: state.sessionWords, label: 'WORDS THIS SESSION' },
-    { value: state.history.length, label: 'DICTATIONS' },
+    { value: state.gui.totalWords || 0, label: 'TOTAL WORDS' },
+    { value: state.gui.totalDictations || 0, label: 'DICTATIONS' },
     { value: state.enabled ? 'ON' : 'OFF', label: 'ENGINE' },
   ];
 }
@@ -569,8 +579,13 @@ function renderPullArea() {
   const area = $('pull-area'); if (!area) return;
   const active = Object.entries(state.pulling).filter(([, p]) => !p.done);
   area.innerHTML = active.map(([name, p]) => `
-    <div style="margin-top:10px"><div class="pull-status">Downloading <b>${esc(name)}</b> · ${esc(p.status)} ${p.percent ? '· ' + p.percent.toFixed(0) + '%' : ''}</div>
-    <div class="pull-bar"><div class="pull-fill" style="width:${p.percent || 0}%"></div></div></div>`).join('');
+    <div style="margin-top:10px">
+      <div class="pull-status">Downloading <b>${esc(name)}</b> · ${esc(p.status)}${p.percent ? ' · ' + p.percent.toFixed(0) + '%' : ''}
+        <span class="pull-cancel" data-cancel="${esc(name)}">✕ CANCEL</span>
+      </div>
+      <div class="pull-bar"><div class="pull-fill" style="width:${p.percent || 0}%"></div></div>
+    </div>`).join('');
+  area.querySelectorAll('[data-cancel]').forEach((b) => b.onclick = () => cancelPull(b.dataset.cancel));
 }
 
 function startPull(name) {
@@ -579,13 +594,29 @@ function startPull(name) {
   renderPullArea();
 }
 
+function cancelPull(name) {
+  invoke('cancel_pull', { name });
+  if (state.pulling[name]) { state.pulling[name].status = 'cancelling…'; renderPullArea(); }
+}
+
 function onPullProgress(p) {
-  state.pulling[p.model] = { percent: p.percent, status: p.error ? ('error: ' + p.error) : p.status, done: p.done };
+  const cancelled = p.status === 'cancelled';
+  state.pulling[p.model] = {
+    percent: p.percent,
+    status: cancelled ? 'cancelled' : (p.error ? 'error: ' + p.error : p.status),
+    done: p.done,
+  };
   if (state.settingsOpen) renderPullArea();
-  if (p.done && !p.error) {
-    // refresh model list to show it as installed, auto-select it
-    refreshModels().then(() => { state.config.formatter_model = p.model; saveConfig(); if (state.settingsOpen) renderSettings(); });
-    setTimeout(() => { delete state.pulling[p.model]; if (state.settingsOpen) renderPullArea(); }, 2500);
+  if (p.done) {
+    if (!p.error) {
+      // Completed: show it installed and auto-select it.
+      refreshModels().then(() => { state.config.formatter_model = p.model; saveConfig(); if (state.settingsOpen) renderSettings(); });
+    }
+    // Clear the row after it ends (quick for cancel/error, a beat longer on success).
+    setTimeout(() => {
+      delete state.pulling[p.model];
+      if (state.settingsOpen) renderPullArea();
+    }, p.error ? 800 : 2500);
   }
 }
 
