@@ -53,8 +53,8 @@ impl Default for Config {
             input_device: String::new(),
             format: FormatLevel::Medium,
             formatter_url: "http://127.0.0.1:11434".to_string(),
-            formatter_model: "qwen3:0.6b".to_string(),
-            formatter_timeout_ms: 8000,
+            formatter_model: "qwen3:1.7b".to_string(),
+            formatter_timeout_ms: 20000,
         }
     }
 }
