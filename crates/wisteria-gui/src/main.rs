@@ -194,9 +194,10 @@ fn position_dock(app: &AppHandle) {
             let size = monitor.size();
             let lw = size.width as f64 / scale;
             let lh = size.height as f64 / scale;
-            let (win_w, win_h) = (240.0, 64.0);
+            // Matches the dock's tiny idle window (see SIZES.idle in dock.js).
+            let (win_w, win_h) = (96.0, 34.0);
             let x = (lw - win_w) / 2.0;
-            let y = lh - win_h - 48.0;
+            let y = lh - win_h - 16.0;
             let _ = dock.set_position(tauri::LogicalPosition::new(x, y));
         }
         let _ = dock.set_always_on_top(true);

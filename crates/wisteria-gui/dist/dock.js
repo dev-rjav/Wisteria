@@ -1,5 +1,6 @@
 // Wisteria floating dock window — always-on-top, frameless, transparent. Reflects engine state
-// and resizes itself to hug the pill (so it barely blocks clicks behind it).
+// and resizes the OS window to hug its pill (so it barely blocks clicks behind it). Idle is a
+// rice-sized ovalish pill; hovering expands it; listening/processing bloom to the full wave.
 'use strict';
 
 const TAURI = window.__TAURI__;
@@ -17,12 +18,32 @@ let seconds = 0;
 let timer = null;
 let hovering = false;
 
-const SIZES = { idle: [240, 64], listening: [470, 104], processing: [460, 100] };
+// Logical window sizes per state. Idle is tiny (rice); the transparent margin around the pill
+// (from .wrap padding) keeps the soft shadow from clipping into a rectangle.
+const SIZES = {
+  idle:       [96, 34],
+  hover:      [300, 74],
+  listening:  [480, 116],
+  processing: [460, 108],
+};
+
+function stateName() {
+  if (enabled && phase === 'listening') return 'active';
+  if (enabled && phase === 'processing') return 'active';
+  if (hovering) return 'hover';
+  return 'idle';
+}
+
+function currentSize() {
+  if (enabled && phase === 'listening') return SIZES.listening;
+  if (enabled && phase === 'processing') return SIZES.processing;
+  if (hovering) return SIZES.hover;
+  return SIZES.idle;
+}
 
 async function layout() {
   if (!win || !LogicalSize) return;
-  const active = enabled && (phase === 'listening' || phase === 'processing');
-  const [w, h] = active ? (phase === 'processing' ? SIZES.processing : SIZES.listening) : SIZES.idle;
+  const [w, h] = currentSize();
   try {
     await win.setSize(new LogicalSize(w, h));
     const x = Math.round((screen.availWidth - w) / 2);
@@ -32,15 +53,17 @@ async function layout() {
 }
 
 function render() {
-  const active = enabled && (phase === 'listening' || phase === 'processing');
   const listening = enabled && phase === 'listening';
   const proc = enabled && phase === 'processing';
-  $('dock').classList.toggle('bright', active);
+  const st = stateName();
+
+  document.body.classList.toggle('s-idle', st === 'idle');
+  document.body.classList.toggle('s-hover', st === 'hover');
+  document.body.classList.toggle('s-active', st === 'active');
+
   $('dot').classList.toggle('live', listening);
   $('dot').classList.toggle('proc', proc);
-  $('readout').classList.toggle('show', active);
   $('wds').textContent = words + ' WORDS';
-  $('hint').classList.toggle('show', hovering && !active);
   if (window.WisteriaWave) window.WisteriaWave.setMode(listening ? 'listening' : (proc ? 'processing' : 'idle'));
 }
 
@@ -54,6 +77,13 @@ function setPhase(p) {
 function startTimer() { seconds = 0; updateTime(); clearInterval(timer); timer = setInterval(() => { seconds++; updateTime(); }, 1000); }
 function stopTimer() { clearInterval(timer); }
 function updateTime() { $('time').textContent = String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0'); }
+
+function setHover(on) {
+  if (hovering === on) return;
+  hovering = on;
+  layout();
+  render();
+}
 
 async function init() {
   const cfg = await invoke('get_config') || {};
@@ -75,8 +105,11 @@ async function init() {
     }
   });
 
-  $('dock').addEventListener('mouseenter', () => { hovering = true; render(); });
-  $('dock').addEventListener('mouseleave', () => { hovering = false; render(); });
+  // The whole (tiny) window is the hover target, so listen on the document.
+  document.addEventListener('mouseenter', () => setHover(true), true);
+  document.addEventListener('mouseleave', () => setHover(false), true);
+  window.addEventListener('mouseover', () => setHover(true));
+  window.addEventListener('mouseout', (e) => { if (!e.relatedTarget) setHover(false); });
 
   layout();
   render();
