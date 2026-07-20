@@ -13,11 +13,12 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 /* ---------- app state ---------- */
 const state = {
   config: null,
-  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', transforms: null, scratch: '', history: [], totalWords: 0, totalDictations: 0 },
+  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', transforms: null, scratch: '' },
   active: 'Dictation',
   phase: 'warming',
   enabled: true,
-  history: [],       // { time, text } — working copy, persisted in gui.history
+  history: [],       // { time, text } — display mirror of the Rust-owned history.json
+  stats: { totalWords: 0, totalDictations: 0 },  // all-time, persisted by the backend
   recording: false,  // hotkey-recorder mode
   timer: { seconds: 0, handle: null },
   settingsOpen: false,
@@ -58,10 +59,10 @@ async function init() {
     const gui = await safeInvoke('get_gui_state', undefined, {});
     Object.assign(state.gui, gui);
     if (!state.gui.transforms) state.gui.transforms = DEFAULT_TRANSFORMS.map((t) => ({ ...t }));
-    // Restore persisted history/counters so they survive restarts.
-    state.history = Array.isArray(state.gui.history) ? state.gui.history : [];
-    if (typeof state.gui.totalWords !== 'number') state.gui.totalWords = 0;
-    if (typeof state.gui.totalDictations !== 'number') state.gui.totalDictations = 0;
+    // Restore history + counters from the Rust-owned history store so they survive restarts.
+    const hist = await safeInvoke('get_history', undefined, { history: [], totalWords: 0, totalDictations: 0 });
+    state.history = Array.isArray(hist.history) ? hist.history : [];
+    state.stats = { totalWords: hist.totalWords || 0, totalDictations: hist.totalDictations || 0 };
 
     const status = await safeInvoke('engine_status', undefined, { enabled: true, phase: 'idle' });
     state.enabled = status.enabled;
@@ -113,18 +114,17 @@ async function listenEngine() {
   await listen('model-pull', (e) => onPullProgress(e.payload));
 }
 
-const HISTORY_CAP = 500;   // keep the on-disk history bounded
+const HISTORY_CAP = 500;   // keep the in-memory mirror bounded (backend caps its file too)
 
 function addTranscript(text, words) {
   const now = new Date();
   const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  // Persist via the backend (atomic, append-only) so it can't be clobbered; update the mirror too.
+  invoke('append_history', { time, text, words: words || 0 });
   state.history.unshift({ time, text });
   if (state.history.length > HISTORY_CAP) state.history.length = HISTORY_CAP;
-  // Persist history + all-time counters so they survive restarts.
-  state.gui.history = state.history;
-  state.gui.totalWords = (state.gui.totalWords || 0) + (words || 0);
-  state.gui.totalDictations = (state.gui.totalDictations || 0) + 1;
-  saveGui();
+  state.stats.totalWords += (words || 0);
+  state.stats.totalDictations += 1;
   if (state.active === 'Dictation') { renderMain(); renderRight(); }
   if (state.active === 'Insights') renderMain();
   if (state.active === 'Scratchpad') appendToScratch(text);
@@ -190,8 +190,8 @@ function renderRight() {
 
 function statList() {
   return [
-    { value: state.gui.totalWords || 0, label: 'TOTAL WORDS' },
-    { value: state.gui.totalDictations || 0, label: 'DICTATIONS' },
+    { value: state.stats.totalWords || 0, label: 'TOTAL WORDS' },
+    { value: state.stats.totalDictations || 0, label: 'DICTATIONS' },
     { value: state.enabled ? 'ON' : 'OFF', label: 'ENGINE' },
   ];
 }

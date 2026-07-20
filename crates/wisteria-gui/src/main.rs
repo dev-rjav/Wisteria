@@ -10,7 +10,7 @@
 mod ollama;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +28,9 @@ struct AppState {
     engine: Mutex<Option<Engine>>,
     config_path: PathBuf,
     gui_state_path: PathBuf,
+    /// Dedicated, append-only dictation history + all-time counters (separate from gui-state so a
+    /// settings save can never clobber it).
+    history_path: PathBuf,
     /// Last known engine phase tag, so the UI can query it on load.
     phase: Arc<Mutex<String>>,
     /// Cancel flags for in-flight model pulls, keyed by model name.
@@ -183,20 +186,102 @@ fn engine_set_enabled(state: State<AppState>, on: bool) {
     }
 }
 
+// ---------- persistence helpers ----------
+
+fn read_json(path: &Path) -> Option<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Write `text` to `path` atomically (temp file + rename) so a crash or an OS shutdown mid-write
+/// can never leave a truncated/corrupt file — the old file stays until the new one is complete.
+fn atomic_write(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Load the history document, preferring history.json and falling back to legacy fields still in
+/// gui-state.json (pre-split installs).
+fn load_history_value(history_path: &Path, gui_state_path: &Path) -> serde_json::Value {
+    if let Some(v) = read_json(history_path) {
+        return v;
+    }
+    let legacy = read_json(gui_state_path).unwrap_or_else(|| serde_json::json!({}));
+    serde_json::json!({
+        "history": legacy.get("history").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "totalWords": legacy.get("totalWords").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "totalDictations": legacy.get("totalDictations").cloned().unwrap_or_else(|| serde_json::json!(0)),
+    })
+}
+
+/// One-time migration: if history.json doesn't exist yet but gui-state.json carries legacy history,
+/// write it out so a later settings-only save of gui-state can't drop it.
+fn migrate_history(history_path: &Path, gui_state_path: &Path) {
+    if history_path.exists() {
+        return;
+    }
+    let legacy = match read_json(gui_state_path) {
+        Some(v) if v.get("history").is_some() => v,
+        _ => return,
+    };
+    let v = serde_json::json!({
+        "history": legacy.get("history").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "totalWords": legacy.get("totalWords").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "totalDictations": legacy.get("totalDictations").cloned().unwrap_or_else(|| serde_json::json!(0)),
+    });
+    if let Ok(s) = serde_json::to_string_pretty(&v) {
+        let _ = atomic_write(history_path, &s);
+    }
+}
+
 // ---------- GUI-only state (dictionary, snippets, scratchpad, style, transforms) ----------
 
 #[tauri::command]
 fn get_gui_state(state: State<AppState>) -> serde_json::Value {
-    std::fs::read_to_string(&state.gui_state_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}))
+    read_json(&state.gui_state_path).unwrap_or_else(|| serde_json::json!({}))
 }
 
 #[tauri::command]
 fn save_gui_state(state: State<AppState>, data: serde_json::Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-    std::fs::write(&state.gui_state_path, text).map_err(|e| e.to_string())
+    atomic_write(&state.gui_state_path, &text).map_err(|e| e.to_string())
+}
+
+// ---------- dictation history (append-only, Rust-owned) ----------
+
+#[tauri::command]
+fn get_history(state: State<AppState>) -> serde_json::Value {
+    load_history_value(&state.history_path, &state.gui_state_path)
+}
+
+/// Append one dictation to history and bump the all-time counters, then persist atomically. Doing
+/// the read-modify-write in Rust means the frontend can never overwrite the whole history with a
+/// stale in-memory copy (the bug that lost history across restarts).
+#[tauri::command]
+fn append_history(state: State<AppState>, time: String, text: String, words: u64) -> Result<(), String> {
+    const CAP: usize = 500;
+    let mut v = load_history_value(&state.history_path, &state.gui_state_path);
+    let obj = v.as_object_mut().ok_or("history document is not an object")?;
+
+    let hist = obj
+        .entry("history")
+        .or_insert_with(|| serde_json::json!([]));
+    if let Some(arr) = hist.as_array_mut() {
+        arr.insert(0, serde_json::json!({ "time": time, "text": text }));
+        if arr.len() > CAP {
+            arr.truncate(CAP);
+        }
+    }
+
+    let total_words = obj.get("totalWords").and_then(|x| x.as_u64()).unwrap_or(0) + words;
+    let total_dict = obj.get("totalDictations").and_then(|x| x.as_u64()).unwrap_or(0) + 1;
+    obj.insert("totalWords".into(), serde_json::json!(total_words));
+    obj.insert("totalDictations".into(), serde_json::json!(total_dict));
+
+    let text_out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    atomic_write(&state.history_path, &text_out).map_err(|e| e.to_string())
 }
 
 /// Show and focus the main window (from the tray).
@@ -294,7 +379,12 @@ fn main() {
             let data_dir = Config::app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
             let config_path = data_dir.join("config.toml");
             let gui_state_path = data_dir.join("gui-state.json");
+            let history_path = data_dir.join("history.json");
             let phase = Arc::new(Mutex::new(Phase::Warming.tag().to_string()));
+
+            // Split any legacy history out of gui-state.json into its own file before the frontend
+            // starts saving settings (which no longer carry history).
+            migrate_history(&history_path, &gui_state_path);
 
             let config = Config::load_or_create(&config_path).unwrap_or_default();
 
@@ -306,6 +396,7 @@ fn main() {
                 engine: Mutex::new(None),
                 config_path,
                 gui_state_path,
+                history_path,
                 phase: Arc::clone(&phase),
                 pulls: Mutex::new(HashMap::new()),
             });
@@ -344,6 +435,8 @@ fn main() {
             engine_set_enabled,
             get_gui_state,
             save_gui_state,
+            get_history,
+            append_history,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wisteria")
