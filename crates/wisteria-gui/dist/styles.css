@@ -215,6 +215,8 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 .field label { font-size: 10px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; display: block; margin-bottom: 6px; }
 .field input { width: 100%; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .1); color: var(--ink); font-size: 13px; }
 
+.prompt-area { width: 100%; min-height: 180px; max-height: 300px; resize: vertical; margin-top: 8px; padding: 12px 14px; border-radius: 11px; background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .1); color: #d5d5da; font-size: 12px; line-height: 1.55; letter-spacing: .2px; user-select: text; white-space: pre-wrap; }
+
 .warn-banner { margin-top: 12px; padding: 12px 14px; border-radius: 11px; background: rgba(245, 158, 11, .08); border: 1px solid rgba(245, 158, 11, .3); color: #fcd34d; font-size: 12px; letter-spacing: .3px; line-height: 1.5; }
 
 .modal-footer { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--card-border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }

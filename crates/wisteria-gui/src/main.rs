@@ -46,6 +46,12 @@ fn save_config(state: State<AppState>, config: Config) -> Result<(), String> {
     Ok(())
 }
 
+/// The built-in default formatter prompt, so the Settings editor can show and reset to it.
+#[tauri::command]
+fn default_formatter_prompt() -> String {
+    wisteria_core::format::default_prompt().to_string()
+}
+
 // ---------- devices ----------
 
 #[tauri::command]
@@ -264,6 +270,17 @@ fn main() {
 
             let config = Config::load_or_create(&config_path).unwrap_or_default();
 
+            // Register state FIRST so frontend commands resolve immediately. Engine::start below
+            // loads the ASR model (several seconds); the webview calls get_config/engine_status as
+            // soon as it loads. If state weren't managed yet those calls would error and — before
+            // the frontend was hardened — the whole UI came up blank. Managing early is the real fix.
+            app.manage(AppState {
+                engine: Mutex::new(None),
+                config_path,
+                gui_state_path,
+                phase: Arc::clone(&phase),
+            });
+
             // Engine event sink → webview (global emit reaches both windows) + phase cache.
             let phase_for_sink = Arc::clone(&phase);
             let sink: EventSink = Arc::new(move |ev: EngineEvent| {
@@ -281,19 +298,14 @@ fn main() {
             });
 
             let engine = Engine::start(config, sink);
-
-            app.manage(AppState {
-                engine: Mutex::new(Some(engine)),
-                config_path,
-                gui_state_path,
-                phase,
-            });
+            app.state::<AppState>().engine.lock().unwrap().replace(engine);
             info!("Wisteria GUI started");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            default_formatter_prompt,
             list_input_devices,
             list_formatter_models,
             list_transcription_models,

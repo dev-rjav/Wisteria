@@ -26,6 +26,7 @@ const state = {
   formatterModels: { reachable: false, selected: '', models: [] },
   transcriptionModels: [],
   pulling: {},       // model -> { percent, status }
+  defaultPrompt: '', // built-in formatter prompt (fetched lazily for the Settings editor)
 };
 
 const NAV = [
@@ -41,20 +42,34 @@ const DEFAULT_TRANSFORMS = [
 ];
 
 /* ---------- init ---------- */
+// Every backend call is isolated: one failing command must never blank the whole UI.
+async function safeInvoke(cmd, args, fallback) {
+  try { const r = await invoke(cmd, args); return r == null ? fallback : r; }
+  catch (e) { console.error('invoke failed:', cmd, e); return fallback; }
+}
+
 async function init() {
-  wireWindowControls();
-  state.config = await invoke('get_config') || {};
-  const gui = await invoke('get_gui_state') || {};
-  Object.assign(state.gui, gui);
-  if (!state.gui.transforms) state.gui.transforms = DEFAULT_TRANSFORMS.map((t) => ({ ...t }));
+  try {
+    wireWindowControls();
+    state.config = await safeInvoke('get_config', undefined, {});
+    const gui = await safeInvoke('get_gui_state', undefined, {});
+    Object.assign(state.gui, gui);
+    if (!state.gui.transforms) state.gui.transforms = DEFAULT_TRANSFORMS.map((t) => ({ ...t }));
 
-  const status = await invoke('engine_status') || { enabled: true, phase: 'idle' };
-  state.enabled = status.enabled;
-  state.phase = status.phase;
+    const status = await safeInvoke('engine_status', undefined, { enabled: true, phase: 'idle' });
+    state.enabled = status.enabled;
+    state.phase = status.phase;
 
-  wireSidebar();
-  await listenEngine();
-  renderAll();
+    wireSidebar();
+    await listenEngine().catch((e) => console.error('listenEngine failed:', e));
+    renderAll();
+  } catch (e) {
+    // Last-resort: never leave the user staring at a black window.
+    console.error('init failed:', e);
+    const m = $('main');
+    if (m) m.innerHTML = `<pre style="color:#f5d0fe;padding:24px;white-space:pre-wrap;font-size:13px;line-height:1.6">Wisteria hit a startup error but is still running:\n\n${esc(e && e.stack || e)}</pre>`;
+    try { renderNav(); } catch (_) {}
+  }
 }
 
 function wireWindowControls() {
@@ -377,6 +392,15 @@ function renderSettings() {
     </div>
 
     <div class="setting">
+      <div class="section-label">FORMATTING PROMPT</div>
+      <div class="page-sub" style="font-size:11px;margin:6px 0 4px">The system prompt sent to the formatting model. Leave the default unless you know what you're changing — it's tuned to avoid the model replying instead of transcribing.</div>
+      <textarea class="prompt-area" id="f-prompt" spellcheck="false" placeholder="Loading default prompt…">${esc(c.formatter_prompt || '')}</textarea>
+      <div class="row" style="margin-top:8px;justify-content:flex-end;gap:8px">
+        <button class="btn-rec" id="prompt-reset">RESET TO DEFAULT</button>
+      </div>
+    </div>
+
+    <div class="setting">
       <div class="section-label">ADVANCED</div>
       <div class="field-grid">
         <div class="field"><label>OLLAMA URL</label><input id="f-url" value="${esc(c.formatter_url || '')}"></div>
@@ -403,6 +427,25 @@ function renderSettings() {
   $('fmt-level').querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => { state.config.format = b.dataset.lvl; saveConfig(); renderSettings(); });
   $('f-url').onchange = () => { state.config.formatter_url = $('f-url').value.trim(); saveConfig(); };
   $('f-timeout').onchange = () => { state.config.formatter_timeout_ms = parseInt($('f-timeout').value, 10) || 20000; saveConfig(); };
+
+  wirePromptEditor();
+}
+
+/* Formatting-prompt editor: empty config value shows the built-in default as a placeholder so the
+   user can see what they're overriding. Saving stores the edited text; Reset clears the override. */
+async function wirePromptEditor() {
+  const ta = $('f-prompt'); if (!ta) return;
+  if (!state.defaultPrompt) state.defaultPrompt = await safeInvoke('default_formatter_prompt', undefined, '');
+  // Show the default in the box when the user hasn't set a custom prompt.
+  if (!ta.value.trim() && state.defaultPrompt) ta.value = state.defaultPrompt;
+  ta.oninput = () => {
+    const v = ta.value;
+    // Treat "same as default" as no override, so future default improvements still apply.
+    state.config.formatter_prompt = (v.trim() === state.defaultPrompt.trim()) ? '' : v;
+    saveConfig();
+  };
+  const reset = $('prompt-reset');
+  if (reset) reset.onclick = () => { ta.value = state.defaultPrompt; state.config.formatter_prompt = ''; saveConfig(); };
 }
 
 /* generic dropdown renderer */
