@@ -17,6 +17,9 @@ let words = 0;
 let seconds = 0;
 let timer = null;
 let hovering = false;
+let lastW = 0, lastH = 0;   // last applied window size — skip redundant resizes (avoids flicker)
+let laying = false;         // re-entrancy guard for the async resize
+let collapseTimer = null;   // debounce so transient leave events during a resize don't collapse
 
 // Logical window sizes per state. Idle is tiny (rice); the transparent margin around the pill
 // (from .wrap padding) keeps the soft shadow from clipping into a rectangle.
@@ -44,12 +47,21 @@ function currentSize() {
 async function layout() {
   if (!win || !LogicalSize) return;
   const [w, h] = currentSize();
+  // Skip if the target size is already applied — resizing to the same size still perturbs the
+  // cursor/hit-testing and is the main source of the hover flicker.
+  if (w === lastW && h === lastH) return;
+  if (laying) return;
+  laying = true;
+  lastW = w; lastH = h;
   try {
-    await win.setSize(new LogicalSize(w, h));
+    // Bottom-anchored: keep the bottom edge fixed so the pill grows upward, never jumping under
+    // the cursor (which would bounce hover state).
     const x = Math.round((screen.availWidth - w) / 2);
     const y = Math.round(screen.availHeight - h - 16);
+    await win.setSize(new LogicalSize(w, h));
     await win.setPosition(new LogicalPosition(x, y));
-  } catch (e) { /* ignore */ }
+  } catch (e) { lastW = 0; lastH = 0; /* force retry next time */ }
+  finally { laying = false; }
 }
 
 function render() {
@@ -78,11 +90,22 @@ function startTimer() { seconds = 0; updateTime(); clearInterval(timer); timer =
 function stopTimer() { clearInterval(timer); }
 function updateTime() { $('time').textContent = String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0'); }
 
-function setHover(on) {
+function applyHover(on) {
   if (hovering === on) return;
   hovering = on;
   layout();
   render();
+}
+
+// Enter is immediate; leave is debounced so the brief pointerout the OS emits while the window
+// is resizing doesn't collapse the dock and start an expand/collapse loop.
+function hoverEnter() {
+  clearTimeout(collapseTimer);
+  applyHover(true);
+}
+function hoverLeave() {
+  clearTimeout(collapseTimer);
+  collapseTimer = setTimeout(() => applyHover(false), 180);
 }
 
 async function init() {
@@ -105,11 +128,12 @@ async function init() {
     }
   });
 
-  // The whole (tiny) window is the hover target, so listen on the document.
-  document.addEventListener('mouseenter', () => setHover(true), true);
-  document.addEventListener('mouseleave', () => setHover(false), true);
-  window.addEventListener('mouseover', () => setHover(true));
-  window.addEventListener('mouseout', (e) => { if (!e.relatedTarget) setHover(false); });
+  // The whole (tiny) window is the hover target. Track hover at the document root with pointer
+  // events; enter cancels any pending collapse, leave debounces it (see hoverLeave).
+  const root = document.documentElement;
+  root.addEventListener('pointerenter', hoverEnter);
+  root.addEventListener('pointerleave', hoverLeave);
+  root.addEventListener('pointermove', hoverEnter);
 
   layout();
   render();
