@@ -1,8 +1,9 @@
 # Build artifacts
 target/
-dist/
 node_modules/
 *.log
+# Only ignore a top-level build `dist/`, NOT the Tauri frontend at crates/wisteria-gui/dist/
+/dist/
 
 # Model weights (downloaded at runtime, never committed)
 models/

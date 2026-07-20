@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wisteria</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Doto:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- TITLE BAR -->
+  <div class="titlebar" data-tauri-drag-region>
+    <div class="tb-left" data-tauri-drag-region>
+      <div class="tb-burger"><span></span><span></span><span></span></div>
+      <span class="tb-title">WISTERIA — OPEN SOURCE VOICE WORKSPACE</span>
+    </div>
+    <div class="tb-controls">
+      <span class="tb-btn" id="win-min" title="Minimize">—</span>
+      <span class="tb-btn" id="win-max" title="Maximize">▢</span>
+      <span class="tb-btn tb-close" id="win-close" title="Close">✕</span>
+    </div>
+  </div>
+
+  <!-- APP GRID -->
+  <div class="app" id="app-grid">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo-ring"><div class="logo-dot"></div></div>
+        <span class="brand-name">WISTERIA</span>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-footer">
+        <a class="side-link" id="link-github" href="#"><span>★</span><span>Star on GitHub</span></a>
+        <div class="side-link" id="open-settings"><span>⚙</span><span>Settings</span></div>
+        <div class="side-link" id="open-help"><span>?</span><span>Help</span></div>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main" id="main"></main>
+
+    <!-- RIGHT PANEL (dictation only) -->
+    <aside class="right" id="right-panel"></aside>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-overlay" id="settings-overlay" hidden>
+    <div class="modal" id="settings-modal"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
