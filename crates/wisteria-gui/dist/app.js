@@ -357,7 +357,7 @@ function renderSettings() {
 
   $('settings-modal').innerHTML = `
     <div class="modal-head">
-      <div class="t"><div class="logo-ring" style="width:18px;height:18px"><div class="logo-dot" style="width:7px;height:7px"></div></div>Settings</div>
+      <div class="t"><img class="brand-logo" src="logo.png" alt="" style="width:22px;height:22px">Settings</div>
       <span class="modal-close" id="set-close">✕</span>
     </div>
 
