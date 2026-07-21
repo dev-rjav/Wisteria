@@ -26,7 +26,7 @@ use crate::asr::Asr;
 use crate::audio::Recorder;
 use crate::config::Config;
 use crate::format::Formatter;
-use crate::hotkey::{ChordState, PttEvent};
+use crate::hotkey::{ChordState, LockMachine, PttAction, PttEvent};
 use crate::{models, paste};
 
 /// Live state read by the global-hotkey callback. Guarded by a mutex; updated when settings change.
@@ -277,6 +277,8 @@ fn worker_loop(
 ) {
     let mut pipe = build_pipeline(&config, &sink);
     let mut enabled = true;
+    // Turns raw press/release into hold-to-talk + double-tap-to-lock behavior.
+    let mut lock = LockMachine::new();
     sink(EngineEvent::Phase(if pipe.asr.is_some() {
         Phase::Idle
     } else {
@@ -284,11 +286,21 @@ fn worker_loop(
     }));
 
     loop {
+        // While the lock machine is waiting for a possible second tap, wake up when that window
+        // lapses so a lone tap gets discarded; otherwise block indefinitely on the two channels.
+        let lock_timeout = match lock.deadline() {
+            Some(dl) => crossbeam_channel::at(dl),
+            None => crossbeam_channel::never(),
+        };
         crossbeam_channel::select! {
             recv(cmd_rx) -> cmd => match cmd {
                 Ok(Cmd::Shutdown) | Err(_) => break,
                 Ok(Cmd::SetEnabled(on)) => {
                     enabled = on;
+                    // Cancel any in-progress recording/lock when disabled.
+                    if lock.reset() {
+                        if let Some(r) = &pipe.recorder { let _ = r.stop(); }
+                    }
                     sink(EngineEvent::Phase(if on { Phase::Idle } else { Phase::Disabled }));
                 }
                 Ok(Cmd::Reload(new)) => {
@@ -323,23 +335,47 @@ fn worker_loop(
                 }
             },
             recv(ptt_rx) -> ev => match ev {
-                Ok(PttEvent::Pressed) => {
+                Ok(pev) => {
                     if enabled {
-                        if let Some(r) = &pipe.recorder { r.start(); }
-                        sink(EngineEvent::Phase(Phase::Listening));
-                    }
-                }
-                Ok(PttEvent::Released) => {
-                    if enabled {
-                        handle_utterance(&mut pipe, &sink);
-                        sink(EngineEvent::Phase(Phase::Idle));
+                        let action = lock.on_event(pev, Instant::now());
+                        apply_ptt_action(action, &mut pipe, &sink);
                     }
                 }
                 Err(_) => break,
             },
+            recv(lock_timeout) -> _ => {
+                let action = lock.on_timeout(Instant::now());
+                apply_ptt_action(action, &mut pipe, &sink);
+            },
         }
     }
     info!("engine worker stopped");
+}
+
+/// Apply a [`PttAction`] from the [`LockMachine`]: start/stop the recorder and drive phases.
+fn apply_ptt_action(action: PttAction, pipe: &mut Pipeline, sink: &EventSink) {
+    match action {
+        PttAction::None => {}
+        PttAction::Start => {
+            if let Some(r) = &pipe.recorder {
+                r.start();
+            }
+            sink(EngineEvent::Phase(Phase::Listening));
+        }
+        // Recording continues hands-free; keep showing the listening state.
+        PttAction::Lock => sink(EngineEvent::Phase(Phase::Listening)),
+        PttAction::Finish => {
+            handle_utterance(pipe, sink);
+            sink(EngineEvent::Phase(Phase::Idle));
+        }
+        PttAction::Discard => {
+            // Lone quick tap: drop whatever little audio was captured, back to idle.
+            if let Some(r) = &pipe.recorder {
+                let _ = r.stop();
+            }
+            sink(EngineEvent::Phase(Phase::Idle));
+        }
+    }
 }
 
 /// Run one capture→ASR→format→paste cycle, emitting a transcript or error.

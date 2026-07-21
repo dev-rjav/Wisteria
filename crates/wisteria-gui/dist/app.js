@@ -220,6 +220,7 @@ function viewDictation() {
         <button class="btn-start ${on ? 'on' : ''}" id="btn-start"><span class="pulse"></span>${state.enabled ? (on ? 'LISTENING…' : 'ENGINE ON') : 'ENGINE OFF'}</button>
       </div>
     </div>
+    <p class="page-sub" style="font-size:12px;margin-top:14px">Hold to talk — or <b>double-tap</b> your hotkey to lock hands-free recording, then tap once more to stop and paste.</p>
     <div class="today-row">
       <span class="today-label">HISTORY</span>
       <input class="input search" id="search" placeholder="Search dictations…">

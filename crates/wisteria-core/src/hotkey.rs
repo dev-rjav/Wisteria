@@ -12,6 +12,8 @@
 //! (function key, etc.): binding a shared modifier would disable its normal use (Alt+Tab, the
 //! Start menu…) while Wisteria runs.
 
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use rdev::{Event, EventType, Key};
@@ -103,6 +105,142 @@ impl ChordState {
             }
             _ => (None, false),
         }
+    }
+}
+
+/// Longest press→release counted as a "tap". A shorter press is a tap (part of a double-tap-to-lock
+/// gesture); a longer one is a deliberate hold-to-talk.
+const TAP_MAX: Duration = Duration::from_millis(350);
+/// After a lone tap, how long to wait for a second tap before giving up (and discarding the tap).
+/// Also the maximum gap between the two taps of a lock gesture.
+const DOUBLE_WINDOW: Duration = Duration::from_millis(400);
+
+/// What the engine should do in response to a PTT transition (or a lock-window timeout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PttAction {
+    /// Nothing.
+    None,
+    /// Begin capturing audio (key just went down from idle).
+    Start,
+    /// Stop capturing and run the ASR → format → paste pipeline.
+    Finish,
+    /// Stop capturing and throw the audio away (a lone quick tap that wasn't a double-tap).
+    Discard,
+    /// A double-tap completed — recording is now locked hands-free (audio is already capturing).
+    Lock,
+}
+
+/// Layers hold-to-talk **and** double-tap-to-lock on top of raw [`PttEvent`] transitions.
+///
+/// - **Hold**: press and hold to record, release to finish (unchanged classic PTT).
+/// - **Double-tap to lock**: two quick taps lock recording hands-free; a single tap afterwards
+///   stops and processes. A lone quick tap that isn't followed by a second is discarded.
+///
+/// Time is injected ([`Instant`]) so the logic is unit-testable. The caller drives it with
+/// [`on_event`](LockMachine::on_event) for each transition and, while [`deadline`](LockMachine::deadline)
+/// is `Some`, calls [`on_timeout`](LockMachine::on_timeout) once that instant passes.
+pub struct LockMachine {
+    state: LockState,
+}
+
+enum LockState {
+    /// Not recording.
+    Idle,
+    /// Recording; first key press is held.
+    Held { since: Instant },
+    /// One quick tap done; still recording, waiting for a second tap (or the window to lapse).
+    ArmedTap { since: Instant },
+    /// A second press is down after a tap; its release decides lock vs. finish.
+    HeldAfterTap { since: Instant },
+    /// Hands-free recording after a successful double-tap.
+    Locked,
+    /// The stop-tap's press was consumed in locked mode; ignore its release.
+    Stopping,
+}
+
+impl Default for LockMachine {
+    fn default() -> Self {
+        LockMachine { state: LockState::Idle }
+    }
+}
+
+impl LockMachine {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The instant at which [`on_timeout`](LockMachine::on_timeout) should be called, if any (only
+    /// while waiting for a possible second tap).
+    pub fn deadline(&self) -> Option<Instant> {
+        match self.state {
+            LockState::ArmedTap { since } => Some(since + DOUBLE_WINDOW),
+            _ => None,
+        }
+    }
+
+    /// Feed a press/release transition; returns the action the engine should take.
+    pub fn on_event(&mut self, ev: PttEvent, now: Instant) -> PttAction {
+        match (&self.state, ev) {
+            (LockState::Idle, PttEvent::Pressed) => {
+                self.state = LockState::Held { since: now };
+                PttAction::Start
+            }
+            (LockState::Held { since }, PttEvent::Released) => {
+                if now.duration_since(*since) < TAP_MAX {
+                    // A quick tap — keep recording and wait to see if a second tap arrives.
+                    self.state = LockState::ArmedTap { since: now };
+                    PttAction::None
+                } else {
+                    self.state = LockState::Idle;
+                    PttAction::Finish
+                }
+            }
+            (LockState::ArmedTap { .. }, PttEvent::Pressed) => {
+                self.state = LockState::HeldAfterTap { since: now };
+                PttAction::None
+            }
+            (LockState::HeldAfterTap { since }, PttEvent::Released) => {
+                if now.duration_since(*since) < TAP_MAX {
+                    // Second quick tap → lock hands-free (already recording since the first press).
+                    self.state = LockState::Locked;
+                    PttAction::Lock
+                } else {
+                    // Held the second press → treat as a normal hold and finish.
+                    self.state = LockState::Idle;
+                    PttAction::Finish
+                }
+            }
+            (LockState::Locked, PttEvent::Pressed) => {
+                // Any press while locked stops and processes; its release is then ignored.
+                self.state = LockState::Stopping;
+                PttAction::Finish
+            }
+            (LockState::Stopping, PttEvent::Released) => {
+                self.state = LockState::Idle;
+                PttAction::None
+            }
+            _ => PttAction::None,
+        }
+    }
+
+    /// Call once [`deadline`](LockMachine::deadline) has passed: a lone tap that never got a second
+    /// tap is abandoned and its audio discarded.
+    pub fn on_timeout(&mut self, _now: Instant) -> PttAction {
+        match self.state {
+            LockState::ArmedTap { .. } => {
+                self.state = LockState::Idle;
+                PttAction::Discard
+            }
+            _ => PttAction::None,
+        }
+    }
+
+    /// Reset to idle (engine disabled/shutting down). Returns `true` if we were mid-recording, so
+    /// the caller can stop and drop the recorder.
+    pub fn reset(&mut self) -> bool {
+        let recording = !matches!(self.state, LockState::Idle | LockState::Stopping);
+        self.state = LockState::Idle;
+        recording
     }
 }
 
@@ -249,5 +387,71 @@ mod tests {
         assert_eq!(s.update(&release(Key::Alt)), (Some(PttEvent::Released), true));
         // Non-target key is neither a transition nor consumed.
         assert_eq!(s.update(&press(Key::KeyA)), (None, false));
+    }
+
+    // ----- LockMachine (hold-to-talk + double-tap-to-lock) -----
+
+    // Convenience: an instant `ms` after a base, so tests can express timing precisely.
+    fn at(base: Instant, ms: u64) -> Instant {
+        base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn hold_to_talk_starts_and_finishes() {
+        let mut m = LockMachine::new();
+        let t = Instant::now();
+        assert_eq!(m.on_event(PttEvent::Pressed, t), PttAction::Start);
+        // Held well past the tap threshold → a normal hold that finishes on release.
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 1000)), PttAction::Finish);
+        assert_eq!(m.deadline(), None);
+    }
+
+    #[test]
+    fn double_tap_locks_then_a_tap_stops() {
+        let mut m = LockMachine::new();
+        let t = Instant::now();
+        // First quick tap: start recording, then a short release (no action yet, awaiting 2nd tap).
+        assert_eq!(m.on_event(PttEvent::Pressed, at(t, 0)), PttAction::Start);
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 80)), PttAction::None);
+        assert!(m.deadline().is_some());
+        // Second quick tap within the window → lock.
+        assert_eq!(m.on_event(PttEvent::Pressed, at(t, 200)), PttAction::None);
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 280)), PttAction::Lock);
+        assert_eq!(m.deadline(), None);
+        // A later single press stops + processes; its release is ignored.
+        assert_eq!(m.on_event(PttEvent::Pressed, at(t, 5000)), PttAction::Finish);
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 5090)), PttAction::None);
+    }
+
+    #[test]
+    fn lone_tap_is_discarded_after_the_window() {
+        let mut m = LockMachine::new();
+        let t = Instant::now();
+        assert_eq!(m.on_event(PttEvent::Pressed, at(t, 0)), PttAction::Start);
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 90)), PttAction::None);
+        // No second tap arrives; the window lapses → discard.
+        assert_eq!(m.on_timeout(at(t, 500)), PttAction::Discard);
+        assert_eq!(m.deadline(), None);
+    }
+
+    #[test]
+    fn hold_after_a_stray_tap_finishes_normally() {
+        let mut m = LockMachine::new();
+        let t = Instant::now();
+        assert_eq!(m.on_event(PttEvent::Pressed, at(t, 0)), PttAction::Start);
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 80)), PttAction::None);
+        // Second press is held long (not a tap) → treated as a normal hold, finishes on release.
+        assert_eq!(m.on_event(PttEvent::Pressed, at(t, 200)), PttAction::None);
+        assert_eq!(m.on_event(PttEvent::Released, at(t, 1500)), PttAction::Finish);
+    }
+
+    #[test]
+    fn reset_reports_recording_state() {
+        let mut m = LockMachine::new();
+        let t = Instant::now();
+        assert!(!m.reset()); // idle
+        m.on_event(PttEvent::Pressed, t);
+        assert!(m.reset()); // was recording
+        assert!(!m.reset()); // back to idle
     }
 }
