@@ -112,9 +112,9 @@ struct ReportForm {
     steps: String,
 }
 
-/// Ship a tester's issue report to the configured MongoDB Atlas collection. The connection URI is
-/// baked in at build time from the `WISTERIA_REPORT_URI` env var (gitignored, never committed); if
-/// it wasn't set, reporting is disabled and this returns an explanatory error.
+/// Ship a tester's issue report to the configured HTTPS ingestion endpoint (Apps Script → Google
+/// Sheet). The URL is baked in at build time from the `WISTERIA_REPORT_URI` env var (gitignored,
+/// never committed); if it wasn't set, reporting is disabled and this returns an explanatory error.
 #[tauri::command]
 fn submit_report(report: ReportForm) -> Result<(), String> {
     let endpoint = option_env!("WISTERIA_REPORT_URI").unwrap_or("").trim();
@@ -127,8 +127,6 @@ fn submit_report(report: ReportForm) -> Result<(), String> {
     {
         return Err("Please fill in your name, a title, and a description.".into());
     }
-    // POST the report as JSON to a small HTTPS ingestion endpoint (which writes it to MongoDB
-    // server-side). Keeps DB credentials out of the distributed app.
     let payload = serde_json::json!({
         "name": report.name.trim(),
         "email": report.email.trim(),
@@ -140,19 +138,28 @@ fn submit_report(report: ReportForm) -> Result<(), String> {
         "appVersion": env!("CARGO_PKG_VERSION"),
         "os": std::env::consts::OS,
     });
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .post(endpoint)
-        .json(&payload)
-        .send()
-        .map_err(|e| format!("could not send: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("server returned {}", resp.status()));
+    let endpoint = endpoint.to_string();
+    // Run the blocking HTTP on a dedicated thread: `reqwest::blocking` panics if it's called from
+    // within Tauri's async runtime (a command may run there), so isolate it on its own thread.
+    let worker = std::thread::spawn(move || -> Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .post(&endpoint)
+            .json(&payload)
+            .send()
+            .map_err(|e| format!("could not send: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("server returned {}", resp.status()));
+        }
+        Ok(())
+    });
+    match worker.join() {
+        Ok(result) => result,
+        Err(_) => Err("the report request crashed".to_string()),
     }
-    Ok(())
 }
 
 // ---------- devices ----------
