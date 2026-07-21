@@ -30,7 +30,7 @@ impl Expander {
     /// are ordered longest-trigger-first so the most specific match wins.
     pub fn new(keyword: &str, snippets: &[Snippet]) -> Expander {
         let keyword = normalize(keyword);
-        let keyword = if keyword.is_empty() { "insert".to_string() } else { keyword };
+        let keyword = if keyword.is_empty() { "snippet".to_string() } else { keyword };
         let mut prepared: Vec<Prepared> = snippets
             .iter()
             .filter(|s| !s.trigger.trim().is_empty() && !s.expansion.is_empty())

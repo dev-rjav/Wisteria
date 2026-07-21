@@ -448,7 +448,7 @@ async function importDictionary() {
 
 /* ---------- Snippets (config-backed; expanded by voice: "<keyword> <trigger>") ---------- */
 function snips() { return Array.isArray(state.config.snippets) ? state.config.snippets : (state.config.snippets = []); }
-function snipKeyword() { return (state.config.snippet_keyword || 'insert'); }
+function snipKeyword() { return (state.config.snippet_keyword || 'snippet'); }
 function viewSnippets() {
   const kw = snipKeyword();
   const list = snips();
@@ -457,7 +457,7 @@ function viewSnippets() {
     <p class="page-sub">Say <b>“${esc(kw)}”</b> followed by a trigger to paste its text — e.g. say “<b>${esc(kw)} address</b>” to insert your address. If the words after “${esc(kw)}” aren’t a snippet, nothing is expanded (so “${esc(kw)} coffee” stays as “${esc(kw)} coffee”).</p>
     <div class="row mt-16" style="align-items:center;gap:10px">
       <span class="section-label">TRIGGER WORD</span>
-      <input class="input" id="snip-kw" style="width:160px" value="${esc(kw)}" placeholder="insert">
+      <input class="input" id="snip-kw" style="width:160px" value="${esc(kw)}" placeholder="snippet">
     </div>
     <div class="row mt-16">
       <input class="input" id="snip-trig" style="width:200px" placeholder="trigger phrase (e.g. work email)">
@@ -474,7 +474,7 @@ function wireSnippets() {
     if (t && x) { snips().push({ trigger: t, expansion: x }); saveConfigNow(); renderMain(); }
   };
   $('snip-exp').onkeydown = (e) => { if (e.key === 'Enter') $('snip-add').click(); };
-  $('snip-kw').onchange = () => { const v = $('snip-kw').value.trim() || 'insert'; state.config.snippet_keyword = v; saveConfigNow(); renderMain(); };
+  $('snip-kw').onchange = () => { const v = $('snip-kw').value.trim() || 'snippet'; state.config.snippet_keyword = v; saveConfigNow(); renderMain(); };
   $('snip-list').querySelectorAll('.x').forEach((el) => el.onclick = () => { snips().splice(+el.dataset.i, 1); saveConfigNow(); renderMain(); });
 }
 

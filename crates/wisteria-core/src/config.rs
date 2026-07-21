@@ -113,7 +113,7 @@ pub struct Config {
     pub dictionary: Vec<String>,
     /// Voice text-expansion snippets (the app's Snippets page).
     pub snippets: Vec<Snippet>,
-    /// The spoken keyword that precedes a snippet trigger (default `"insert"`). Saying this word
+    /// The spoken keyword that precedes a snippet trigger (default `"snippet"`). Saying this word
     /// followed by a snippet's trigger expands it; on its own it's left as ordinary text.
     pub snippet_keyword: String,
 }
@@ -134,7 +134,7 @@ impl Default for Config {
             style: WritingStyle::default(),
             dictionary: Vec::new(),
             snippets: Vec::new(),
-            snippet_keyword: "insert".to_string(),
+            snippet_keyword: "snippet".to_string(),
         }
     }
 }
