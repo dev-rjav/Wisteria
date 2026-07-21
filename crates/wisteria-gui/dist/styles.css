@@ -63,16 +63,19 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 .logo-ring { width: 20px; height: 20px; border-radius: 50%; border: 3px solid var(--magenta); position: relative; }
 .logo-dot { position: absolute; left: 50%; top: 52%; transform: translate(-50%, -50%); width: 8px; height: 8px; border-radius: 50%; background: var(--magenta); }
 .brand-name { font-size: 21px; font-weight: 800; letter-spacing: 1px; }
-.nav { display: flex; flex-direction: column; gap: 4px; }
+/* Nav fills the space between the brand and the footer, and scrolls if the list is tall, so the
+   footer always stays pinned at the bottom with clear separation (never converging into it). */
+.nav { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .nav-item {
   display: flex; align-items: center; gap: 13px; padding: 11px 12px; border-radius: 11px;
   cursor: pointer; color: #9a9aa0; border: 1px solid transparent; transition: all .15s ease;
+  flex-shrink: 0;
 }
 .nav-item:hover { background: rgba(255, 255, 255, .04); }
 .nav-item.active { background: rgba(232, 121, 249, .12); border-color: rgba(232, 121, 249, .4); color: var(--magenta-light); }
 .nav-icon { width: 18px; text-align: center; font-size: 14px; }
 .nav-label { font-size: 14px; font-weight: 600; letter-spacing: .5px; }
-.sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 3px; }
+.sidebar-footer { flex-shrink: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 14px; border-top: 1px solid var(--hair); }
 .side-link { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 9px; color: #9a9aa0; cursor: pointer; font-size: 13px; letter-spacing: .5px; }
 .side-link:hover { background: rgba(255, 255, 255, .04); }
 
