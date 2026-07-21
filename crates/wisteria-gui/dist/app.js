@@ -44,30 +44,54 @@ async function safeInvoke(cmd, args, fallback) {
   catch (e) { console.error('invoke failed:', cmd, e); return fallback; }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Load the config, retrying until we get a real one (a valid config always has a ptt_key). On the
+// first launch after an update the backend can be momentarily not-ready, and a single failed read
+// used to get cached as an empty {} for the whole session (settings looked reset until relaunch).
+async function fetchConfigStable() {
+  for (let i = 0; i < 30; i++) {
+    let c = null;
+    try { c = await invoke('get_config'); } catch (_) { /* not ready yet */ }
+    if (c && typeof c === 'object' && typeof c.ptt_key === 'string' && c.ptt_key) return c;
+    await sleep(120);
+  }
+  return null;
+}
+
+// Pull the latest config + history + engine status from disk into state. Used on startup AND
+// whenever the window regains focus, so re-showing a hidden window always reflects what's on disk
+// (no more "quit from Task Manager and relaunch to see my history/settings").
+async function loadFromBackend() {
+  const cfg = await fetchConfigStable();
+  if (cfg) {
+    if (!Array.isArray(cfg.dictionary)) cfg.dictionary = [];
+    state.config = cfg;
+  }
+  const gui = await safeInvoke('get_gui_state', undefined, {});
+  Object.assign(state.gui, gui);
+  // One-time migration: the dictionary used to live in gui-state; move any saved words into the
+  // config (which the pipeline actually reads) so existing custom words keep working.
+  if (configOk() && !state.config.dictionary.length && Array.isArray(gui.dictionary) && gui.dictionary.length) {
+    state.config.dictionary = gui.dictionary.slice();
+    saveConfigNow();
+  }
+  const hist = await safeInvoke('get_history', undefined, null);
+  if (hist && Array.isArray(hist.history)) {
+    state.history = hist.history;
+    state.stats = { totalWords: hist.totalWords || 0, totalDictations: hist.totalDictations || 0 };
+  }
+  const status = await safeInvoke('engine_status', undefined, null);
+  if (status) { state.enabled = status.enabled; state.phase = status.phase; }
+}
+
 async function init() {
   try {
     wireWindowControls();
-    state.config = await safeInvoke('get_config', undefined, {});
-    const gui = await safeInvoke('get_gui_state', undefined, {});
-    Object.assign(state.gui, gui);
-    if (!Array.isArray(state.config.dictionary)) state.config.dictionary = [];
-    // One-time migration: the dictionary used to live in gui-state; move any saved words into the
-    // config (which the pipeline actually reads) so existing custom words keep working.
-    if (!state.config.dictionary.length && Array.isArray(gui.dictionary) && gui.dictionary.length) {
-      state.config.dictionary = gui.dictionary.slice();
-      invoke('save_config', { config: state.config });
-    }
-    // Restore history + counters from the Rust-owned history store so they survive restarts.
-    const hist = await safeInvoke('get_history', undefined, { history: [], totalWords: 0, totalDictations: 0 });
-    state.history = Array.isArray(hist.history) ? hist.history : [];
-    state.stats = { totalWords: hist.totalWords || 0, totalDictations: hist.totalDictations || 0 };
-
-    const status = await safeInvoke('engine_status', undefined, { enabled: true, phase: 'idle' });
-    state.enabled = status.enabled;
-    state.phase = status.phase;
-
+    await loadFromBackend();
     wireSidebar();
     await listenEngine().catch((e) => console.error('listenEngine failed:', e));
+    wireFocusRefresh();
     renderAll();
   } catch (e) {
     // Last-resort: never leave the user staring at a black window.
@@ -76,6 +100,28 @@ async function init() {
     if (m) m.innerHTML = `<pre style="color:#f5d0fe;padding:24px;white-space:pre-wrap;font-size:13px;line-height:1.6">Wisteria hit a startup error but is still running:\n\n${esc(e && e.stack || e)}</pre>`;
     try { renderNav(); } catch (_) {}
   }
+}
+
+// Re-sync from disk when the window is brought to the foreground (the app hides to the tray on
+// close and is re-shown by the tray / a second launch). Debounced, and skipped while actively
+// recording a hotkey so it can't interrupt that.
+let lastRefresh = 0;
+async function refreshFromDisk() {
+  if (state.recording) return;
+  const now = Date.now();
+  if (now - lastRefresh < 500) return;
+  lastRefresh = now;
+  // Flush any pending debounced writes first so we don't re-read stale disk over a fresh edit.
+  if (saveCfgTimer) { clearTimeout(saveCfgTimer); saveCfgTimer = null; if (configOk()) await invoke('save_config', { config: state.config }); }
+  if (saveGuiTimer) { clearTimeout(saveGuiTimer); saveGuiTimer = null; invoke('save_gui_state', { data: state.gui }); }
+  await loadFromBackend();
+  renderAll();
+  if (state.settingsOpen && !state.openDD) renderSettings();
+}
+function wireFocusRefresh() {
+  try { if (appWindow && appWindow.onFocusChanged) appWindow.onFocusChanged(({ payload: focused }) => { if (focused) refreshFromDisk(); }); } catch (_) {}
+  window.addEventListener('focus', refreshFromDisk);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshFromDisk(); });
 }
 
 function wireWindowControls() {
@@ -520,11 +566,15 @@ let saveGuiTimer = null;
 function saveGui() { invoke('save_gui_state', { data: state.gui }); }
 function debouncedSaveGui() { clearTimeout(saveGuiTimer); saveGuiTimer = setTimeout(saveGui, 400); }
 let saveCfgTimer = null;
-function saveConfig() { clearTimeout(saveCfgTimer); saveCfgTimer = setTimeout(() => invoke('save_config', { config: state.config }), 200); }
+// A valid config always has a ptt_key. Refuse to persist anything that fails this — otherwise a
+// transiently-empty state.config (e.g. a failed startup load) could overwrite config.toml with
+// defaults and wipe the user's real settings.
+function configOk() { return state.config && typeof state.config === 'object' && typeof state.config.ptt_key === 'string' && state.config.ptt_key.length > 0; }
+function saveConfig() { if (!configOk()) return; clearTimeout(saveCfgTimer); saveCfgTimer = setTimeout(() => invoke('save_config', { config: state.config }), 200); }
 // Persist + reload the engine immediately (no debounce). Used for discrete controls like the
 // Transforms toggles and intensity, so the change applies to the very next dictation. Returns the
 // invoke promise so callers can await the round-trip if they want.
-function saveConfigNow() { clearTimeout(saveCfgTimer); return invoke('save_config', { config: state.config }); }
+function saveConfigNow() { if (!configOk()) return Promise.resolve(); clearTimeout(saveCfgTimer); return invoke('save_config', { config: state.config }); }
 
 /* ---------- settings modal ---------- */
 async function openSettings() {
