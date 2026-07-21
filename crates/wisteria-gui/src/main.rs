@@ -98,6 +98,63 @@ fn import_dictionary(path: String) -> Result<Vec<String>, String> {
     Ok(words)
 }
 
+// ---------- issue reports (temporary testing-phase feature) ----------
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportForm {
+    name: String,
+    email: String,
+    kind: String,
+    severity: String,
+    title: String,
+    description: String,
+    steps: String,
+}
+
+/// Ship a tester's issue report to the configured MongoDB Atlas collection. The connection URI is
+/// baked in at build time from the `WISTERIA_REPORT_URI` env var (gitignored, never committed); if
+/// it wasn't set, reporting is disabled and this returns an explanatory error.
+#[tauri::command]
+fn submit_report(report: ReportForm) -> Result<(), String> {
+    let endpoint = option_env!("WISTERIA_REPORT_URI").unwrap_or("").trim();
+    if endpoint.is_empty() {
+        return Err("Issue reporting isn't configured in this build yet.".into());
+    }
+    if report.name.trim().is_empty()
+        || report.title.trim().is_empty()
+        || report.description.trim().is_empty()
+    {
+        return Err("Please fill in your name, a title, and a description.".into());
+    }
+    // POST the report as JSON to a small HTTPS ingestion endpoint (which writes it to MongoDB
+    // server-side). Keeps DB credentials out of the distributed app.
+    let payload = serde_json::json!({
+        "name": report.name.trim(),
+        "email": report.email.trim(),
+        "type": report.kind,
+        "severity": report.severity,
+        "title": report.title.trim(),
+        "description": report.description.trim(),
+        "steps": report.steps.trim(),
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+    });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(endpoint)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("could not send: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 // ---------- devices ----------
 
 #[tauri::command]
@@ -478,6 +535,7 @@ fn main() {
             effective_prompt,
             export_dictionary,
             import_dictionary,
+            submit_report,
             list_input_devices,
             list_formatter_models,
             list_transcription_models,

@@ -35,6 +35,7 @@ const state = {
 const NAV = [
   ['Dictation', '●'], ['Insights', '▤'], ['Dictionary', '▦'],
   ['Snippets', '✂'], ['Transforms', '✦'], ['Style', '❖'], ['Ask AI', '✧'], ['Scratchpad', '▭'],
+  ['Report', '⚑'],
 ];
 
 /* ---------- init ---------- */
@@ -256,6 +257,7 @@ function renderMain() {
     case 'Transforms': m.innerHTML = viewTransforms(); wireTransforms(); break;
     case 'Style': m.innerHTML = viewStyle(); wireStyle(); break;
     case 'Ask AI': m.innerHTML = viewAskAi(); wireAskAi(); break;
+    case 'Report': m.innerHTML = viewReport(); wireReport(); break;
     case 'Scratchpad': m.innerHTML = viewScratchpad(); wireScratchpad(); break;
   }
 }
@@ -583,6 +585,53 @@ function wireAskAi() {
   $('ai-toggle').onclick = () => { state.config.ask_ai_enabled = !state.config.ask_ai_enabled; saveConfigNow(); renderMain(); };
   const kw = $('ai-kw');
   if (kw) kw.onchange = () => { state.config.ask_ai_keyword = kw.value.trim() || 'assistant'; saveConfigNow(); renderMain(); };
+}
+
+/* ---------- Report an Issue (testing phase — POSTs to a report endpoint) ---------- */
+function viewReport() {
+  return `
+    <h1 class="page-title">Report an Issue</h1>
+    <p class="page-sub">This is a testing build — hit a bug or have an improvement? Send it straight to the team. Your name, a title, and a description are required; the app version and OS are attached automatically.</p>
+    <div class="card mt-22" style="display:flex;flex-direction:column;gap:14px;max-width:660px">
+      <div class="row" style="gap:12px">
+        <div style="flex:1"><label class="section-label">YOUR NAME *</label><input class="input" id="rep-name" style="width:100%;margin-top:6px" placeholder="Jane Doe"></div>
+        <div style="flex:1"><label class="section-label">EMAIL (optional)</label><input class="input" id="rep-email" style="width:100%;margin-top:6px" placeholder="you@example.com"></div>
+      </div>
+      <div class="row" style="gap:12px">
+        <div style="flex:1"><label class="section-label">TYPE</label><select class="input" id="rep-type" style="width:100%;margin-top:6px"><option>Bug</option><option>Improvement</option><option>Question</option><option>Other</option></select></div>
+        <div style="flex:1"><label class="section-label">SEVERITY</label><select class="input" id="rep-sev" style="width:100%;margin-top:6px"><option>—</option><option>Low</option><option>Medium</option><option>High</option></select></div>
+      </div>
+      <div><label class="section-label">TITLE *</label><input class="input" id="rep-title" style="width:100%;margin-top:6px" placeholder="Short summary of the issue"></div>
+      <div><label class="section-label">DESCRIPTION *</label><textarea class="prompt-area" id="rep-desc" style="min-height:120px" placeholder="What happened, and what did you expect instead?"></textarea></div>
+      <div><label class="section-label">STEPS TO REPRODUCE (optional)</label><textarea class="prompt-area" id="rep-steps" style="min-height:80px" placeholder="1. …&#10;2. …&#10;3. …"></textarea></div>
+      <div class="row" style="justify-content:flex-end;align-items:center;gap:14px">
+        <span id="rep-status" class="page-sub" style="margin:0"></span>
+        <button class="btn-primary" id="rep-submit">SEND REPORT</button>
+      </div>
+    </div>`;
+}
+function wireReport() {
+  const status = (msg, ok) => { const s = $('rep-status'); if (s) { s.textContent = msg; s.style.color = ok ? '#4ade80' : '#f87171'; } };
+  $('rep-submit').onclick = async () => {
+    const report = {
+      name: $('rep-name').value.trim(),
+      email: $('rep-email').value.trim(),
+      kind: $('rep-type').value,
+      severity: $('rep-sev').value === '—' ? '' : $('rep-sev').value,
+      title: $('rep-title').value.trim(),
+      description: $('rep-desc').value.trim(),
+      steps: $('rep-steps').value.trim(),
+    };
+    if (!report.name || !report.title || !report.description) { status('Please fill in your name, a title, and a description.', false); return; }
+    $('rep-submit').disabled = true; status('Sending…', true);
+    try {
+      await invoke('submit_report', { report });
+      status('✓ Thank you! Your report was sent.', true);
+      ['rep-name', 'rep-email', 'rep-title', 'rep-desc', 'rep-steps'].forEach((id) => { if ($(id)) $(id).value = ''; });
+    } catch (e) {
+      status(String((e && e.message) || e), false);
+    } finally { $('rep-submit').disabled = false; }
+  };
 }
 
 /* ---------- Scratchpad ---------- */
