@@ -331,7 +331,19 @@ function viewTransforms() {
       ${TRANSFORM_ITEMS.map((t) => `
         <div class="toggle-row"><div class="meta"><div class="toggle-name">${esc(t.name)}</div><div class="toggle-desc">${esc(t.desc)}</div></div>
         <div class="switch ${tf[t.key] ? 'on' : ''}" data-key="${t.key}"><div class="knob"></div></div></div>`).join('')}
+    </div>
+    <div class="card mt-22">
+      <div class="section-label">EFFECTIVE PROMPT — exactly what the model receives</div>
+      <p class="page-sub" style="font-size:11px;margin:6px 0 8px">Updates live as you toggle. Disabled transforms have their whole rule section removed and an explicit "do not" ban added, so you can confirm each switch takes effect.</p>
+      <pre class="prompt-preview" id="eff-prompt">Loading…</pre>
     </div>`;
+}
+// Fetch and show the real system prompt for the current config (reflects toggles + intensity).
+async function refreshEffectivePrompt() {
+  const pre = $('eff-prompt');
+  if (!pre) return;
+  const text = await safeInvoke('effective_prompt', { config: state.config }, '');
+  if ($('eff-prompt')) $('eff-prompt').textContent = text || '(empty)';
 }
 function wireTransforms() {
   // Intensity + toggles are discrete choices: save and reload the engine immediately so the change
@@ -344,6 +356,7 @@ function wireTransforms() {
     saveConfigNow();
     renderMain();
   });
+  refreshEffectivePrompt();
 }
 
 /* ---------- Style ---------- */

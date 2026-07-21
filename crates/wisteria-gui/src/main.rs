@@ -56,7 +56,16 @@ fn save_config(state: State<AppState>, config: Config) -> Result<(), String> {
 /// The built-in default formatter prompt, so the Settings editor can show and reset to it.
 #[tauri::command]
 fn default_formatter_prompt() -> String {
-    wisteria_core::format::default_prompt().to_string()
+    wisteria_core::format::default_prompt()
+}
+
+/// The exact system prompt the model would receive for `config` (composed from the transform
+/// toggles, intensity, custom prompt, and guard). Powers the live "effective prompt" preview so the
+/// user can verify a toggle actually changes what's sent. Pure function of the passed config — takes
+/// the frontend's current (possibly just-toggled) config so the preview updates instantly.
+#[tauri::command]
+fn effective_prompt(config: Config) -> String {
+    wisteria_core::format::effective_system_prompt(&config)
 }
 
 // ---------- devices ----------
@@ -433,6 +442,7 @@ fn main() {
             get_config,
             save_config,
             default_formatter_prompt,
+            effective_prompt,
             list_input_devices,
             list_formatter_models,
             list_transcription_models,

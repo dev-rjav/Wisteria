@@ -182,6 +182,38 @@ pub fn default_prompt() -> String {
     compose_prompt(&Transforms::default())
 }
 
+/// Assemble the full system prompt from its parts: base rules + intensity + the absolute guard +
+/// the disabled-transform bans. Shared by [`Formatter::request`] and [`effective_system_prompt`] so
+/// the GUI preview is byte-for-byte what the model actually receives.
+fn assemble_system(base: &str, level: FormatLevel, transforms: &Transforms) -> String {
+    // Bans go last (most recent = highest authority) so they hold even with a custom base prompt;
+    // for the composed default the matching rule block is already absent anyway.
+    format!(
+        "{}\n\nINTENSITY: {}\n{}{}",
+        base,
+        intensity_line(level),
+        GUARD,
+        disabled_reinforcements(transforms),
+    )
+}
+
+/// The exact system prompt that would be sent to the model for `config`, so the GUI can display it
+/// for verification. Reflects the transform toggles, intensity, custom prompt, and the guard. When
+/// `format = off` there is no prompt (the model is skipped), so a plain explanation is returned.
+pub fn effective_system_prompt(config: &Config) -> String {
+    if config.format == FormatLevel::Off {
+        return "Formatting is OFF.\n\nThe local model is skipped entirely — your raw transcript is \
+                pasted exactly as spoken. Set intensity to Light, Medium, or High to enable cleanup."
+            .to_string();
+    }
+    let base = if config.formatter_prompt.trim().is_empty() {
+        compose_prompt(&config.transforms)
+    } else {
+        config.formatter_prompt.clone()
+    };
+    assemble_system(&base, config.format, &config.transforms)
+}
+
 /// A configured, reachable transcript formatter backed by an Ollama model.
 pub struct Formatter {
     client: reqwest::blocking::Client,
@@ -286,16 +318,7 @@ impl Formatter {
 
     /// Issue the `/api/chat` request and return the assistant message content.
     fn request(&self, raw: &str) -> reqwest::Result<String> {
-        // The disabled-transform reinforcements go last (most recent = highest authority) so they
-        // pin behavior even for a custom prompt; for the composed default the matching rule block
-        // is already absent, so there is nothing for them to contradict.
-        let system = format!(
-            "{}\n\nINTENSITY: {}\n{}{}",
-            self.base_prompt(),
-            intensity_line(self.level),
-            GUARD,
-            disabled_reinforcements(&self.transforms),
-        );
+        let system = assemble_system(&self.base_prompt(), self.level, &self.transforms);
         // Wrap the transcript in delimiters so the model can never mistake it for instructions.
         let user = format!("<transcript>\n{raw}\n</transcript>");
         let body = ChatRequest {
@@ -611,6 +634,32 @@ mod tests {
         assert!(ban.contains("DISABLED BY THE USER"));
         assert!(ban.contains("twenty five"));
         assert!(ban.contains("Keep ALL filler words"));
+    }
+
+    #[test]
+    fn effective_prompt_reflects_toggles_and_intensity() {
+        let mut cfg = Config::default();
+        cfg.format = FormatLevel::High;
+        cfg.transforms.email_formatting = false;
+        let p = effective_system_prompt(&cfg);
+        // Symbol rules removed, ban present, intensity + guard included.
+        assert!(!p.contains("FORMAT EMAILS"));
+        assert!(p.contains("DISABLED BY THE USER"));
+        assert!(p.contains("INTENSITY: High"));
+        assert!(p.contains("ABSOLUTE RULES"));
+
+        // Turning it back on brings the section back and drops the ban.
+        cfg.transforms.email_formatting = true;
+        let p2 = effective_system_prompt(&cfg);
+        assert!(p2.contains("FORMAT EMAILS"));
+        assert!(!p2.contains("DISABLED BY THE USER"));
+    }
+
+    #[test]
+    fn effective_prompt_off_explains_skip() {
+        let mut cfg = Config::default();
+        cfg.format = FormatLevel::Off;
+        assert!(effective_system_prompt(&cfg).contains("Formatting is OFF"));
     }
 
     #[test]
