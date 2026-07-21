@@ -269,7 +269,7 @@ fn get_history(state: State<AppState>) -> serde_json::Value {
 /// the read-modify-write in Rust means the frontend can never overwrite the whole history with a
 /// stale in-memory copy (the bug that lost history across restarts).
 #[tauri::command]
-fn append_history(state: State<AppState>, time: String, text: String, words: u64) -> Result<(), String> {
+fn append_history(state: State<AppState>, time: String, text: String, words: u64, ts: i64) -> Result<(), String> {
     const CAP: usize = 500;
     let mut v = load_history_value(&state.history_path, &state.gui_state_path);
     let obj = v.as_object_mut().ok_or("history document is not an object")?;
@@ -278,7 +278,9 @@ fn append_history(state: State<AppState>, time: String, text: String, words: u64
         .entry("history")
         .or_insert_with(|| serde_json::json!([]));
     if let Some(arr) = hist.as_array_mut() {
-        arr.insert(0, serde_json::json!({ "time": time, "text": text }));
+        // `ts` is epoch milliseconds; it lets the UI group entries by day (Today/Yesterday/date).
+        // `time` stays as the human display string for the row.
+        arr.insert(0, serde_json::json!({ "time": time, "text": text, "ts": ts }));
         if arr.len() > CAP {
             arr.truncate(CAP);
         }

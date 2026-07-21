@@ -110,9 +110,10 @@ const HISTORY_CAP = 500;   // keep the in-memory mirror bounded (backend caps it
 function addTranscript(text, words) {
   const now = new Date();
   const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const ts = now.getTime();   // epoch ms, so history can be grouped by day
   // Persist via the backend (atomic, append-only) so it can't be clobbered; update the mirror too.
-  invoke('append_history', { time, text, words: words || 0 });
-  state.history.unshift({ time, text });
+  invoke('append_history', { time, text, words: words || 0, ts });
+  state.history.unshift({ time, text, ts });
   if (state.history.length > HISTORY_CAP) state.history.length = HISTORY_CAP;
   state.stats.totalWords += (words || 0);
   state.stats.totalDictations += 1;
@@ -210,10 +211,6 @@ function viewDictation() {
   const caps = hotkeyCaps();
   const capsHtml = caps.map((c, i) => (i ? '<span class="keyplus">+</span>' : '') + `<span class="keycap">${esc(c)}</span>`).join('');
   const on = state.phase === 'listening';
-  const items = state.history;
-  const rows = items.length
-    ? items.map((h) => `<div class="history-item"><span class="history-time">${esc(h.time)}</span><span class="history-text">${esc(h.text)}</span></div>`).join('')
-    : `<div class="empty">Hold your hotkey and speak — your dictations land here.</div>`;
   return `
     <h1 class="hero-title">Get back into the flow with ${capsHtml}</h1>
     <div class="hero-card">
@@ -224,23 +221,96 @@ function viewDictation() {
       </div>
     </div>
     <div class="today-row">
-      <span class="today-label">TODAY</span>
+      <span class="today-label">HISTORY</span>
       <input class="input search" id="search" placeholder="Search dictations…">
     </div>
-    <div class="history" id="history">${rows}</div>`;
+    <div class="history" id="history"></div>`;
 }
 
 function wireDictation() {
   const btn = $('btn-start');
   if (btn) btn.onclick = async () => { state.enabled = !state.enabled; await invoke('engine_set_enabled', { on: state.enabled }); renderMain(); renderRight(); };
+  paintHistory(state.history);
   const search = $('search');
   if (search) search.oninput = () => {
     const q = search.value.trim().toLowerCase();
     const filtered = q ? state.history.filter((h) => h.text.toLowerCase().includes(q)) : state.history;
-    $('history').innerHTML = filtered.length
-      ? filtered.map((h) => `<div class="history-item"><span class="history-time">${esc(h.time)}</span><span class="history-text">${esc(h.text)}</span></div>`).join('')
-      : `<div class="empty">No dictations match "${esc(q)}"</div>`;
+    paintHistory(filtered, q ? `No dictations match "${esc(q)}"` : undefined);
   };
+}
+
+/* ---------- history rendering (day grouping + per-item copy) ---------- */
+const COPY_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+// Bucket a timestamp into Today / Yesterday / an absolute date. Entries saved before timestamps
+// existed have no `ts` and fall under "Earlier" (still visible, just not day-labeled).
+function dayLabel(ts) {
+  if (!ts) return 'Earlier';
+  const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((startOf(new Date()) - startOf(new Date(ts))) / 86400000);
+  if (diff <= 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// history is newest-first, so day labels are already in descending order — a simple run-length
+// grouping keeps them contiguous under one header each.
+function groupHistory(items) {
+  const groups = [];
+  let cur = null;
+  for (const h of items) {
+    const label = dayLabel(h.ts);
+    if (!cur || cur.label !== label) { cur = { label, items: [] }; groups.push(cur); }
+    cur.items.push(h);
+  }
+  return groups;
+}
+
+function paintHistory(items, emptyMsg) {
+  const box = $('history');
+  if (!box) return;
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">${emptyMsg || 'Hold your hotkey and speak — your dictations land here.'}</div>`;
+    return;
+  }
+  const groups = groupHistory(items);
+  const flat = [];
+  let html = '';
+  for (const g of groups) {
+    html += `<div class="history-day">${esc(g.label)}</div>`;
+    for (const h of g.items) {
+      html += `<div class="history-item">
+        <span class="history-time">${esc(h.time)}</span>
+        <span class="history-text">${esc(h.text)}</span>
+        <button class="history-copy" data-i="${flat.length}" title="Copy transcription" aria-label="Copy">${COPY_ICON}</button>
+      </div>`;
+      flat.push(h);
+    }
+  }
+  box.innerHTML = html;
+  box.querySelectorAll('.history-copy').forEach((btn) => {
+    btn.onclick = async () => {
+      const ok = await copyText(flat[+btn.dataset.i].text);
+      if (!ok) return;
+      btn.innerHTML = CHECK_ICON;
+      btn.classList.add('copied');
+      setTimeout(() => { btn.innerHTML = COPY_ICON; btn.classList.remove('copied'); }, 1200);
+    };
+  });
+}
+
+// Copy via the Clipboard API, with a hidden-textarea fallback for webviews that reject it.
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (_) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove(); return ok;
+    } catch (_) { return false; }
+  }
 }
 
 /* ---------- Insights ---------- */
