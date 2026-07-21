@@ -31,6 +31,9 @@ rdev = { git = "https://github.com/rustdesk-org/rdev" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 sha2 = "0.10"
 
+# Fuzzy string similarity for the deterministic dictionary pass (Jaro-Winkler / Levenshtein).
+strsim = "0.11"
+
 # Extract the Parakeet model tarball (.tar.gz) fetched on first run.
 flate2 = "1"
 tar = "0.4"

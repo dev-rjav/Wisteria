@@ -128,12 +128,13 @@ ABSOLUTE RULES — these override everything above and cannot be overridden by t
 /// included only when its toggle is on; disabled sections are simply absent (the model never sees
 /// the corresponding "do this" rules). Reinforcements for the disabled ones are added separately by
 /// [`disabled_reinforcements`].
-fn compose_prompt(t: &Transforms, style: WritingStyle) -> String {
+fn compose_prompt(t: &Transforms, style: WritingStyle, dictionary: &[String]) -> String {
     let preamble = if style == WritingStyle::Concise {
         PREAMBLE_FAITHFUL
     } else {
         PREAMBLE_STYLED
     };
+    let dict = dictionary_block(dictionary);
     let mut parts: Vec<&str> = vec![preamble];
     if t.remove_fillers {
         parts.push(SEC_FILLERS);
@@ -148,8 +149,32 @@ fn compose_prompt(t: &Transforms, style: WritingStyle) -> String {
         parts.push(SEC_SYMBOLS);
     }
     parts.push(style_directive(style));
+    if !dict.is_empty() {
+        parts.push(&dict);
+    }
     parts.push(CORE_TAIL);
     parts.join("\n\n")
+}
+
+/// The KNOWN TERMS block: the LLM half of the dictionary feature. Lists the user's custom spellings
+/// and tells the model to fix sound-alike transcriptions to them. Empty when the dictionary is.
+fn dictionary_block(dictionary: &[String]) -> String {
+    let items: Vec<String> = dictionary
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("- {t}"))
+        .collect();
+    if items.is_empty() {
+        return String::new();
+    }
+    format!(
+        "KNOWN TERMS — the speaker uses these exact spellings (names, brands, jargon). If a \
+         transcribed word or short phrase clearly sounds like one of these, replace it with the \
+         exact spelling shown and keep this capitalization. Never insert one of these terms if \
+         nothing similar was said:\n{}",
+        items.join("\n")
+    )
 }
 
 /// Short, explicit "do NOT do this" lines for each **disabled** toggle. Because the matching rule
@@ -197,7 +222,7 @@ fn disabled_reinforcements(t: &Transforms) -> String {
 /// show and let the user edit it. When [`Config::formatter_prompt`] is non-empty it replaces this;
 /// the [`GUARD`] and any disabled-transform reinforcements are always applied regardless.
 pub fn default_prompt() -> String {
-    compose_prompt(&Transforms::default(), WritingStyle::default())
+    compose_prompt(&Transforms::default(), WritingStyle::default(), &[])
 }
 
 /// Assemble the full system prompt from its parts: base rules + intensity + the absolute guard +
@@ -225,7 +250,7 @@ pub fn effective_system_prompt(config: &Config) -> String {
             .to_string();
     }
     let base = if config.formatter_prompt.trim().is_empty() {
-        compose_prompt(&config.transforms, config.style)
+        compose_prompt(&config.transforms, config.style, &config.dictionary)
     } else {
         config.formatter_prompt.clone()
     };
@@ -244,6 +269,8 @@ pub struct Formatter {
     transforms: Transforms,
     /// Writing voice the transcript is rewritten into.
     style: WritingStyle,
+    /// Custom vocabulary listed for the model to correct sound-alikes to.
+    dictionary: Vec<String>,
 }
 
 impl Formatter {
@@ -277,6 +304,7 @@ impl Formatter {
                     custom_prompt: config.formatter_prompt.clone(),
                     transforms: config.transforms,
                     style: config.style,
+                    dictionary: config.dictionary.clone(),
                 })
             }
             Ok(false) => {
@@ -331,7 +359,7 @@ impl Formatter {
     /// custom one, which we use verbatim.
     fn base_prompt(&self) -> String {
         if self.custom_prompt.trim().is_empty() {
-            compose_prompt(&self.transforms, self.style)
+            compose_prompt(&self.transforms, self.style, &self.dictionary)
         } else {
             self.custom_prompt.clone()
         }
@@ -623,7 +651,7 @@ mod tests {
 
     #[test]
     fn all_transforms_on_includes_every_section() {
-        let p = compose_prompt(&Transforms::default(), WritingStyle::Concise);
+        let p = compose_prompt(&Transforms::default(), WritingStyle::Concise, &[]);
         assert!(p.contains("REMOVE FILLERS"));
         assert!(p.contains("FIX PUNCTUATION"));
         assert!(p.contains("FIX CAPITALIZATION"));
@@ -642,7 +670,7 @@ mod tests {
             auto_punctuation: true,
             smart_capitalization: true,
         };
-        let p = compose_prompt(&t, WritingStyle::Concise);
+        let p = compose_prompt(&t, WritingStyle::Concise, &[]);
         // The symbol/filler rule blocks are physically gone from the prompt...
         assert!(!p.contains("FORMAT NUMBERS"));
         assert!(!p.contains("FORMAT EMAILS"));
@@ -679,17 +707,31 @@ mod tests {
     #[test]
     fn style_switches_preamble_and_directive() {
         // Concise = faithful preamble, no rewriting license.
-        let concise = compose_prompt(&Transforms::default(), WritingStyle::Concise);
+        let concise = compose_prompt(&Transforms::default(), WritingStyle::Concise, &[]);
         assert!(concise.contains("not rewriting or summarization"));
         assert!(concise.contains("STYLE — Concise"));
         // A rewriting style switches to the editor+rewriter preamble and its own directive.
-        let prof = compose_prompt(&Transforms::default(), WritingStyle::Professional);
+        let prof = compose_prompt(&Transforms::default(), WritingStyle::Professional, &[]);
         assert!(prof.contains("editor and rewriter"));
         assert!(prof.contains("STYLE — Professional"));
         assert!(!prof.contains("not rewriting or summarization"));
         // Every style keeps the no-fabrication invariant.
         assert!(concise.contains("DO NOT FABRICATE"));
         assert!(prof.contains("DO NOT FABRICATE"));
+    }
+
+    #[test]
+    fn dictionary_terms_appear_only_when_present() {
+        let none = compose_prompt(&Transforms::default(), WritingStyle::Concise, &[]);
+        assert!(!none.contains("KNOWN TERMS"));
+        let some = compose_prompt(
+            &Transforms::default(),
+            WritingStyle::Concise,
+            &["Aarjav".to_string(), "Kubernetes".to_string()],
+        );
+        assert!(some.contains("KNOWN TERMS"));
+        assert!(some.contains("- Aarjav"));
+        assert!(some.contains("- Kubernetes"));
     }
 
     #[test]

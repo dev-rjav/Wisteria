@@ -97,6 +97,9 @@ pub struct Config {
     pub transforms: Transforms,
     /// Writing voice the formatter rewrites into (the app's Style page).
     pub style: WritingStyle,
+    /// Custom vocabulary (names, jargon, brands) the pipeline should spell exactly (the app's
+    /// Dictionary page). Each entry is a canonical word or short phrase, cased as it should appear.
+    pub dictionary: Vec<String>,
 }
 
 impl Default for Config {
@@ -113,6 +116,7 @@ impl Default for Config {
             formatter_prompt: String::new(),
             transforms: Transforms::default(),
             style: WritingStyle::default(),
+            dictionary: Vec::new(),
         }
     }
 }

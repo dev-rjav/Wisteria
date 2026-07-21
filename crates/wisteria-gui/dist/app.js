@@ -13,7 +13,7 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 /* ---------- app state ---------- */
 const state = {
   config: null,
-  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], scratch: '' },
+  gui: { snippets: [], scratch: '' },
   active: 'Dictation',
   phase: 'warming',
   enabled: true,
@@ -50,6 +50,13 @@ async function init() {
     state.config = await safeInvoke('get_config', undefined, {});
     const gui = await safeInvoke('get_gui_state', undefined, {});
     Object.assign(state.gui, gui);
+    if (!Array.isArray(state.config.dictionary)) state.config.dictionary = [];
+    // One-time migration: the dictionary used to live in gui-state; move any saved words into the
+    // config (which the pipeline actually reads) so existing custom words keep working.
+    if (!state.config.dictionary.length && Array.isArray(gui.dictionary) && gui.dictionary.length) {
+      state.config.dictionary = gui.dictionary.slice();
+      invoke('save_config', { config: state.config });
+    }
     // Restore history + counters from the Rust-owned history store so they survive restarts.
     const hist = await safeInvoke('get_history', undefined, { history: [], totalWords: 0, totalDictations: 0 });
     state.history = Array.isArray(hist.history) ? hist.history : [];
@@ -330,24 +337,27 @@ function viewInsights() {
     </div>`;
 }
 
-/* ---------- Dictionary ---------- */
+/* ---------- Dictionary (maps to config.dictionary; used by the pipeline) ---------- */
+function dictWords() { return Array.isArray(state.config.dictionary) ? state.config.dictionary : (state.config.dictionary = []); }
 function viewDictionary() {
+  const words = dictWords();
   return `
     <h1 class="page-title">Dictionary</h1>
-    <p class="page-sub">Teach Wisteria proper spellings, names and jargon.</p>
+    <p class="page-sub">Teach Wisteria proper spellings — names, brands, and jargon. It fixes sound-alike transcriptions to the exact spelling you add here (e.g. your name), and keeps their capitalization.</p>
     <div class="row mt-22">
       <input class="input" id="dict-input" style="flex:1" placeholder="Add a word or phrase…">
       <button class="btn-primary" id="dict-add">ADD</button>
     </div>
     <div class="chips" id="dict-chips">
-      ${state.gui.dictionary.map((w, i) => `<div class="chip"><span>${esc(w)}</span><span class="x" data-i="${i}">✕</span></div>`).join('')}
+      ${words.length ? words.map((w, i) => `<div class="chip"><span>${esc(w)}</span><span class="x" data-i="${i}">✕</span></div>`).join('') : '<div class="empty" style="padding:18px 0">No custom words yet.</div>'}
     </div>`;
 }
 function wireDictionary() {
-  const add = () => { const v = $('dict-input').value.trim(); if (v) { state.gui.dictionary.push(v); $('dict-input').value = ''; saveGui(); renderMain(); } };
+  // Save immediately (config-backed) so the pipeline picks up new words on the next dictation.
+  const add = () => { const v = $('dict-input').value.trim(); if (v && !dictWords().includes(v)) { dictWords().push(v); $('dict-input').value = ''; saveConfigNow(); renderMain(); } };
   $('dict-add').onclick = add;
   $('dict-input').onkeydown = (e) => { if (e.key === 'Enter') add(); };
-  $('dict-chips').querySelectorAll('.x').forEach((x) => x.onclick = () => { state.gui.dictionary.splice(+x.dataset.i, 1); saveGui(); renderMain(); });
+  $('dict-chips').querySelectorAll('.x').forEach((x) => x.onclick = () => { dictWords().splice(+x.dataset.i, 1); saveConfigNow(); renderMain(); });
 }
 
 /* ---------- Snippets ---------- */

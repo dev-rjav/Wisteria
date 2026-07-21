@@ -6400,6 +6400,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "sha2",
+ "strsim",
  "tar",
  "thiserror 1.0.69",
  "toml 0.8.2",

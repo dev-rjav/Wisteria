@@ -234,6 +234,9 @@ struct Pipeline {
     recorder: Option<Recorder>,
     asr: Option<Asr>,
     formatter: Option<Formatter>,
+    /// Deterministic dictionary corrector, applied to the raw transcript before formatting (and it
+    /// is the only dictionary correction when the formatter is off).
+    dictionary: crate::dictionary::Matcher,
 }
 
 /// Build (or rebuild) the pipeline from `config`, emitting warming/error events.
@@ -265,6 +268,7 @@ fn build_pipeline(config: &Config, sink: &EventSink) -> Pipeline {
         recorder,
         asr,
         formatter,
+        dictionary: crate::dictionary::Matcher::new(&config.dictionary),
     }
 }
 
@@ -313,7 +317,9 @@ fn worker_loop(
                         || new.formatter_timeout_ms != config.formatter_timeout_ms
                         || new.formatter_prompt != config.formatter_prompt
                         || new.transforms != config.transforms
-                        || new.style != config.style;
+                        || new.style != config.style
+                        || new.dictionary != config.dictionary;
+                    let rebuild_dict = new.dictionary != config.dictionary;
                     if rebuild_audio {
                         pipe.recorder = match Recorder::new(&new.input_device) {
                             Ok(r) => Some(r),
@@ -329,6 +335,9 @@ fn worker_loop(
                     }
                     if rebuild_fmt {
                         pipe.formatter = Formatter::new(&new);
+                    }
+                    if rebuild_dict {
+                        pipe.dictionary = crate::dictionary::Matcher::new(&new.dictionary);
                     }
                     config = new;
                     sink(EngineEvent::Phase(if enabled { Phase::Idle } else { Phase::Disabled }));
@@ -407,6 +416,11 @@ fn handle_utterance(pipe: &mut Pipeline, sink: &EventSink) {
     if raw.is_empty() {
         return;
     }
+
+    // Deterministic dictionary correction on the raw transcript: fixes casing/close phonetic
+    // matches of the user's custom words before formatting, and is the only dictionary pass when
+    // the formatter is off. The LLM also gets the term list (see format::compose_prompt).
+    let raw = pipe.dictionary.apply(&raw);
 
     let clean = match &pipe.formatter {
         Some(f) => f.clean(&raw),

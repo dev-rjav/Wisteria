@@ -15,6 +15,7 @@
 pub mod asr;
 pub mod audio;
 pub mod config;
+pub mod dictionary;
 pub mod engine;
 pub mod format;
 pub mod hotkey;
