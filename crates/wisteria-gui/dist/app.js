@@ -661,7 +661,14 @@ function renderFmtDD() {
       <div class="opt-tags">${tags.join('')}</div></div>`;
   }).join('') || '<div class="dd-opt">No models — start Ollama</div>';
   dropdown('dd-fmt', 'fmt', esc(label), html, (mount) => {
-    mount.querySelectorAll('[data-dl]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); startPull(b.dataset.dl); });
+    mount.querySelectorAll('[data-dl]').forEach((b) => b.onclick = (e) => {
+      e.stopPropagation();
+      // Collapse the dropdown so its absolutely-positioned menu stops covering the progress bar +
+      // cancel button below it (otherwise the cancel click lands on the open menu, not the button).
+      state.openDD = null;
+      startPull(b.dataset.dl);
+      renderSettings();
+    });
     mount.querySelectorAll('[data-v]').forEach((o) => o.onclick = () => {
       if (o.dataset.installed !== 'true') return;
       state.config.formatter_model = o.dataset.v; state.openDD = null; saveConfig(); renderSettings();
