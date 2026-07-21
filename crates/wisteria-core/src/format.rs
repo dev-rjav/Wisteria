@@ -555,7 +555,14 @@ impl Formatter {
         }
         match self.request(raw) {
             Ok(cleaned) => {
-                let cleaned = capitalize_first(&strip_reasoning(&strip_transcript_tags(&cleaned)));
+                let stripped = strip_reasoning(&strip_transcript_tags(&cleaned));
+                // Our deterministic first-letter capitalization is itself a capitalization edit, so
+                // honor the toggle: when "smart capitalization" is off, leave casing untouched.
+                let cleaned = if self.transforms.smart_capitalization {
+                    capitalize_first(&stripped)
+                } else {
+                    stripped
+                };
                 if cleaned.is_empty() {
                     warn!("formatter returned empty output; using raw transcript");
                     raw.to_string()
@@ -577,12 +584,15 @@ impl Formatter {
 
     /// Issue the `/api/chat` request and return the assistant message content.
     fn request(&self, raw: &str) -> reqwest::Result<String> {
+        // Order matters: the transform overrides go LAST so they are the most recent (and thus
+        // highest-authority) instruction the model sees — otherwise the 400-line base ruleset and
+        // the "apply all rules thoroughly" intensity line drown out a single disabling line.
         let system = format!(
-            "{}{}\n\nINTENSITY: {}\n{}",
+            "{}\n\nINTENSITY: {}\n{}{}",
             self.prompt,
-            transform_overrides(&self.transforms),
             intensity_line(self.level),
-            GUARD
+            GUARD,
+            transform_overrides(&self.transforms),
         );
         // Wrap the transcript in delimiters so the model can never mistake it for instructions.
         let user = format!("<transcript>\n{raw}\n</transcript>");
@@ -641,41 +651,51 @@ fn model_available(client: &reqwest::blocking::Client, url: &str, model: &str) -
     Ok(tags.models.iter().any(|m| m.name == model))
 }
 
-/// Build the transform-override block from the user's toggles. Each **disabled** toggle appends an
-/// explicit negative instruction that suppresses the matching built-in rule; enabled toggles add
+/// Build the transform-override block from the user's toggles. Each **disabled** toggle appends a
+/// forceful negative instruction that suppresses the matching built-in rule; enabled toggles add
 /// nothing (the base prompt already covers them). Returns `""` when every toggle is on, so the
-/// default prompt is untouched. Prepended with blank lines so it slots between the base prompt and
-/// the INTENSITY line.
+/// default prompt is untouched.
+///
+/// Wording is deliberately emphatic and framed as the highest-priority, final instruction because
+/// it has to overrule ~400 lines of the base prompt (plus its examples) that say the opposite —
+/// a terse "don't" gets ignored even by larger models. Appended last by [`Formatter::request`].
 fn transform_overrides(t: &Transforms) -> String {
     let mut lines: Vec<&str> = Vec::new();
     if !t.remove_fillers {
         lines.push(
-            "- Do NOT remove filler words, hesitations, repetitions, or false starts \
-             (um, uh, like, you know); keep every word exactly as spoken.",
+            "- FILLER REMOVAL IS OFF: do NOT remove any filler words, hesitations, repetitions, \
+             stutters, or false starts (um, uh, er, like, you know, I mean). Keep every single \
+             word exactly as spoken, even if it sounds redundant or messy.",
         );
     }
     if !t.auto_punctuation {
         lines.push(
-            "- Do NOT add, remove, or change punctuation, sentence boundaries, or paragraph \
-             breaks; keep punctuation exactly as dictated.",
+            "- PUNCTUATION IS OFF: do NOT add, remove, move, or change any punctuation marks, \
+             sentence boundaries, or paragraph breaks. Keep only the punctuation the speaker \
+             explicitly dictated.",
         );
     }
     if !t.smart_capitalization {
         lines.push(
-            "- Do NOT change capitalization; leave every letter's case exactly as transcribed.",
+            "- CAPITALIZATION IS OFF: do NOT change the letter case of any word. Leave every \
+             letter exactly as it appears in the transcript, including the first word.",
         );
     }
     if !t.email_formatting {
         lines.push(
-            "- Do NOT reformat emails, URLs, numbers, dates, times, currencies, or percentages; \
-             leave them as the plain words that were spoken.",
+            "- SYMBOL FORMATTING IS OFF: do NOT convert spoken numbers, dates, times, emails, \
+             URLs, currencies, or percentages into digits or symbols. Keep them as the plain \
+             words that were transcribed — the spoken words 'twenty five' must stay the words \
+             'twenty five' (never '25'), and 'dot'/'at' must stay as words.",
         );
     }
     if lines.is_empty() {
         return String::new();
     }
     format!(
-        "\n\nTRANSFORM OVERRIDES — these override the numbered rules above:\n{}",
+        "\n\nHIGHEST-PRIORITY OVERRIDES — the user has switched these off. They OVERRIDE every \
+         rule, numbered example, and the intensity level above. This is your final and most \
+         important instruction; obey it exactly:\n{}",
         lines.join("\n")
     )
 }
@@ -906,12 +926,12 @@ mod tests {
             email_formatting: true,
         };
         let block = transform_overrides(&t);
-        assert!(block.contains("TRANSFORM OVERRIDES"));
-        assert!(block.contains("Do NOT remove filler words"));
-        assert!(block.contains("Do NOT add, remove, or change punctuation"));
+        assert!(block.contains("HIGHEST-PRIORITY OVERRIDES"));
+        assert!(block.contains("FILLER REMOVAL IS OFF"));
+        assert!(block.contains("PUNCTUATION IS OFF"));
         // Enabled toggles contribute nothing.
-        assert!(!block.contains("capitalization"));
-        assert!(!block.contains("reformat emails"));
+        assert!(!block.contains("CAPITALIZATION IS OFF"));
+        assert!(!block.contains("SYMBOL FORMATTING IS OFF"));
     }
 
     #[test]
