@@ -364,6 +364,13 @@ fn main() {
         .init();
 
     tauri::Builder::default()
+        // Single-instance MUST be the first plugin registered. When the user launches Wisteria
+        // again while it's already running (it lives in the tray after the window is closed), this
+        // fires in the *existing* process — we just re-show its window — and the second process
+        // exits. That prevents a duplicate dock, tray icon, and engine from spawning.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         // Closing a window hides it (app keeps running in the tray); it never quits the app.
         .on_window_event(|window, event| {
