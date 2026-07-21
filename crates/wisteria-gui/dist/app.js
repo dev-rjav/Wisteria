@@ -676,17 +676,38 @@ function renderFmtDD() {
   });
 }
 
+function pullStatusText(p) {
+  return p.status + (p.percent ? ' · ' + p.percent.toFixed(0) + '%' : '');
+}
+
+// Full (re)build of the download rows + cancel buttons. Called ONLY when the set of active
+// downloads changes — every progress tick updates in place via updatePullRow so the cancel button
+// element stays alive. (Rebuilding it on every tick destroyed it between mousedown and mouseup, so
+// the click never registered and cancel appeared dead.)
 function renderPullArea() {
   const area = $('pull-area'); if (!area) return;
   const active = Object.entries(state.pulling).filter(([, p]) => !p.done);
   area.innerHTML = active.map(([name, p]) => `
-    <div style="margin-top:10px">
-      <div class="pull-status">Downloading <b>${esc(name)}</b> · ${esc(p.status)}${p.percent ? ' · ' + p.percent.toFixed(0) + '%' : ''}
-        <span class="pull-cancel" data-cancel="${esc(name)}">✕ CANCEL</span>
+    <div class="pull-row" data-row="${esc(name)}" style="margin-top:10px">
+      <div class="pull-status">Downloading <b>${esc(name)}</b> · <span class="pull-msg">${esc(pullStatusText(p))}</span>
+        <button type="button" class="pull-cancel" data-cancel="${esc(name)}">✕ CANCEL</button>
       </div>
       <div class="pull-bar"><div class="pull-fill" style="width:${p.percent || 0}%"></div></div>
     </div>`).join('');
   area.querySelectorAll('[data-cancel]').forEach((b) => b.onclick = () => cancelPull(b.dataset.cancel));
+}
+
+// Update one download row's bar + status text in place, leaving the cancel button untouched.
+// Returns false if no such row is mounted (caller should do a full renderPullArea instead).
+function updatePullRow(name) {
+  const area = $('pull-area'); if (!area) return false;
+  const sel = (window.CSS && CSS.escape) ? CSS.escape(name) : name;
+  const row = area.querySelector('.pull-row[data-row="' + sel + '"]');
+  if (!row) return false;
+  const p = state.pulling[name]; if (!p) return false;
+  const msg = row.querySelector('.pull-msg'); if (msg) msg.textContent = pullStatusText(p);
+  const fill = row.querySelector('.pull-fill'); if (fill) fill.style.width = (p.percent || 0) + '%';
+  return true;
 }
 
 function startPull(name) {
@@ -697,19 +718,32 @@ function startPull(name) {
 
 function cancelPull(name) {
   invoke('cancel_pull', { name });
-  if (state.pulling[name]) { state.pulling[name].status = 'cancelling…'; renderPullArea(); }
+  const p = state.pulling[name];
+  if (p) { p.status = 'cancelling…'; if (!updatePullRow(name)) renderPullArea(); }
+  // Safety net: if the backend is slow to confirm the cancel (e.g. blocked between progress lines),
+  // clear the row anyway after a moment so cancel always feels responsive.
+  setTimeout(() => {
+    if (state.pulling[name] && !state.pulling[name].done) {
+      delete state.pulling[name];
+      if (state.settingsOpen) renderPullArea();
+    }
+  }, 1500);
 }
 
 function onPullProgress(p) {
   const cancelled = p.status === 'cancelled';
+  const existed = !!state.pulling[p.model];
   state.pulling[p.model] = {
     percent: p.percent,
     status: cancelled ? 'cancelled' : (p.error ? 'error: ' + p.error : p.status),
     done: p.done,
   };
-  if (state.settingsOpen) renderPullArea();
+  if (state.settingsOpen) {
+    // In-place tick keeps the cancel button stable; only rebuild when a row appears or disappears.
+    if (p.done || !existed || !updatePullRow(p.model)) renderPullArea();
+  }
   if (p.done) {
-    if (!p.error) {
+    if (!p.error && !cancelled) {
       // Completed: show it installed and auto-select it.
       refreshModels().then(() => { state.config.formatter_model = p.model; saveConfig(); if (state.settingsOpen) renderSettings(); });
     }
@@ -717,7 +751,7 @@ function onPullProgress(p) {
     setTimeout(() => {
       delete state.pulling[p.model];
       if (state.settingsOpen) renderPullArea();
-    }, p.error ? 800 : 2500);
+    }, (p.error || cancelled) ? 600 : 2500);
   }
 }
 
