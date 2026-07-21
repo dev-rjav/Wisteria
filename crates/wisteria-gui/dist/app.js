@@ -13,7 +13,7 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 /* ---------- app state ---------- */
 const state = {
   config: null,
-  gui: { snippets: [], scratch: '' },
+  gui: { scratch: '' },
   active: 'Dictation',
   phase: 'warming',
   enabled: true,
@@ -66,16 +66,21 @@ async function loadFromBackend() {
   const cfg = await fetchConfigStable();
   if (cfg) {
     if (!Array.isArray(cfg.dictionary)) cfg.dictionary = [];
+    if (!Array.isArray(cfg.snippets)) cfg.snippets = [];
     state.config = cfg;
   }
   const gui = await safeInvoke('get_gui_state', undefined, {});
   Object.assign(state.gui, gui);
-  // One-time migration: the dictionary used to live in gui-state; move any saved words into the
-  // config (which the pipeline actually reads) so existing custom words keep working.
+  // One-time migration: dictionary + snippets used to live in gui-state; move any saved ones into
+  // the config (which the pipeline actually reads) so existing custom entries keep working.
+  let migrated = false;
   if (configOk() && !state.config.dictionary.length && Array.isArray(gui.dictionary) && gui.dictionary.length) {
-    state.config.dictionary = gui.dictionary.slice();
-    saveConfigNow();
+    state.config.dictionary = gui.dictionary.slice(); migrated = true;
   }
+  if (configOk() && !state.config.snippets.length && Array.isArray(gui.snippets) && gui.snippets.length) {
+    state.config.snippets = gui.snippets.slice(); migrated = true;
+  }
+  if (migrated) saveConfigNow();
   const hist = await safeInvoke('get_history', undefined, null);
   if (hist && Array.isArray(hist.history)) {
     state.history = hist.history;
@@ -441,26 +446,36 @@ async function importDictionary() {
   renderMain();
 }
 
-/* ---------- Snippets ---------- */
+/* ---------- Snippets (config-backed; expanded by voice: "<keyword> <trigger>") ---------- */
+function snips() { return Array.isArray(state.config.snippets) ? state.config.snippets : (state.config.snippets = []); }
+function snipKeyword() { return (state.config.snippet_keyword || 'insert'); }
 function viewSnippets() {
+  const kw = snipKeyword();
+  const list = snips();
   return `
     <h1 class="page-title">Snippets</h1>
-    <p class="page-sub">Say a trigger, Wisteria expands it into full text.</p>
-    <div class="row mt-22">
-      <input class="input" id="snip-trig" style="width:180px" placeholder="trigger">
-      <input class="input" id="snip-exp" style="flex:1" placeholder="expands to…">
+    <p class="page-sub">Say <b>“${esc(kw)}”</b> followed by a trigger to paste its text — e.g. say “<b>${esc(kw)} address</b>” to insert your address. If the words after “${esc(kw)}” aren’t a snippet, nothing is expanded (so “${esc(kw)} coffee” stays as “${esc(kw)} coffee”).</p>
+    <div class="row mt-16" style="align-items:center;gap:10px">
+      <span class="section-label">TRIGGER WORD</span>
+      <input class="input" id="snip-kw" style="width:160px" value="${esc(kw)}" placeholder="insert">
+    </div>
+    <div class="row mt-16">
+      <input class="input" id="snip-trig" style="width:200px" placeholder="trigger phrase (e.g. work email)">
+      <input class="input" id="snip-exp" style="flex:1" placeholder="expands to… (pasted exactly)">
       <button class="btn-primary" id="snip-add">ADD</button>
     </div>
     <div class="history mt-16" id="snip-list">
-      ${state.gui.snippets.map((s, i) => `<div class="toggle-row"><span class="chip" style="border:none;background:rgba(232,121,249,.12);color:var(--magenta-light)">/${esc(s.trigger)}</span><span style="color:var(--muted-2)">→</span><span class="history-text" style="flex:1">${esc(s.expansion)}</span><span class="x" data-i="${i}" style="cursor:pointer;color:var(--muted-2)">✕</span></div>`).join('') || '<div class="empty">No snippets yet.</div>'}
+      ${list.length ? list.map((s, i) => `<div class="toggle-row"><span class="chip" style="border:none;background:rgba(232,121,249,.12);color:var(--magenta-light)">${esc(kw)} ${esc(s.trigger)}</span><span style="color:var(--muted-2)">→</span><span class="history-text" style="flex:1">${esc(s.expansion)}</span><span class="x" data-i="${i}" style="cursor:pointer;color:var(--muted-2)">✕</span></div>`).join('') : '<div class="empty">No snippets yet.</div>'}
     </div>`;
 }
 function wireSnippets() {
   $('snip-add').onclick = () => {
     const t = $('snip-trig').value.trim(), x = $('snip-exp').value.trim();
-    if (t && x) { state.gui.snippets.push({ trigger: t, expansion: x }); saveGui(); renderMain(); }
+    if (t && x) { snips().push({ trigger: t, expansion: x }); saveConfigNow(); renderMain(); }
   };
-  $('snip-list').querySelectorAll('.x').forEach((el) => el.onclick = () => { state.gui.snippets.splice(+el.dataset.i, 1); saveGui(); renderMain(); });
+  $('snip-exp').onkeydown = (e) => { if (e.key === 'Enter') $('snip-add').click(); };
+  $('snip-kw').onchange = () => { const v = $('snip-kw').value.trim() || 'insert'; state.config.snippet_keyword = v; saveConfigNow(); renderMain(); };
+  $('snip-list').querySelectorAll('.x').forEach((el) => el.onclick = () => { snips().splice(+el.dataset.i, 1); saveConfigNow(); renderMain(); });
 }
 
 /* ---------- Transforms (drive the Rust formatter: intensity + per-behavior toggles) ---------- */

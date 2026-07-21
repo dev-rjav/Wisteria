@@ -68,6 +68,17 @@ impl Default for Transforms {
     }
 }
 
+/// A voice text-expansion snippet: say the keyword + `trigger` (e.g. "insert address") and the
+/// `expansion` is pasted verbatim in its place. Triggered only when the spoken words after the
+/// keyword match a `trigger`; otherwise the text is left untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snippet {
+    /// The spoken phrase said after the keyword (e.g. "work email").
+    pub trigger: String,
+    /// The exact text pasted in place of "<keyword> <trigger>".
+    pub expansion: String,
+}
+
 /// Top-level user configuration. Missing fields fall back to [`Default`] on load, so upgrades
 /// that add fields don't break existing config files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +111,11 @@ pub struct Config {
     /// Custom vocabulary (names, jargon, brands) the pipeline should spell exactly (the app's
     /// Dictionary page). Each entry is a canonical word or short phrase, cased as it should appear.
     pub dictionary: Vec<String>,
+    /// Voice text-expansion snippets (the app's Snippets page).
+    pub snippets: Vec<Snippet>,
+    /// The spoken keyword that precedes a snippet trigger (default `"insert"`). Saying this word
+    /// followed by a snippet's trigger expands it; on its own it's left as ordinary text.
+    pub snippet_keyword: String,
 }
 
 impl Default for Config {
@@ -117,6 +133,8 @@ impl Default for Config {
             transforms: Transforms::default(),
             style: WritingStyle::default(),
             dictionary: Vec::new(),
+            snippets: Vec::new(),
+            snippet_keyword: "insert".to_string(),
         }
     }
 }

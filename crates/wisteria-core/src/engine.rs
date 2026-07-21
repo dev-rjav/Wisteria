@@ -237,6 +237,8 @@ struct Pipeline {
     /// Deterministic dictionary corrector, applied to the raw transcript before formatting (and it
     /// is the only dictionary correction when the formatter is off).
     dictionary: crate::dictionary::Matcher,
+    /// Voice snippet expander, applied to the final text after formatting (verbatim expansions).
+    snippets: crate::snippets::Expander,
 }
 
 /// Build (or rebuild) the pipeline from `config`, emitting warming/error events.
@@ -269,6 +271,7 @@ fn build_pipeline(config: &Config, sink: &EventSink) -> Pipeline {
         asr,
         formatter,
         dictionary: crate::dictionary::Matcher::new(&config.dictionary),
+        snippets: crate::snippets::Expander::new(&config.snippet_keyword, &config.snippets),
     }
 }
 
@@ -320,6 +323,8 @@ fn worker_loop(
                         || new.style != config.style
                         || new.dictionary != config.dictionary;
                     let rebuild_dict = new.dictionary != config.dictionary;
+                    let rebuild_snip = new.snippets != config.snippets
+                        || new.snippet_keyword != config.snippet_keyword;
                     if rebuild_audio {
                         pipe.recorder = match Recorder::new(&new.input_device) {
                             Ok(r) => Some(r),
@@ -338,6 +343,9 @@ fn worker_loop(
                     }
                     if rebuild_dict {
                         pipe.dictionary = crate::dictionary::Matcher::new(&new.dictionary);
+                    }
+                    if rebuild_snip {
+                        pipe.snippets = crate::snippets::Expander::new(&new.snippet_keyword, &new.snippets);
                     }
                     config = new;
                     sink(EngineEvent::Phase(if enabled { Phase::Idle } else { Phase::Disabled }));
@@ -426,6 +434,9 @@ fn handle_utterance(pipe: &mut Pipeline, sink: &EventSink) {
         Some(f) => f.clean(&raw),
         None => raw.clone(),
     };
+    // Expand voice snippets on the final text (verbatim, after formatting so the model can't reflow
+    // them). "<keyword> <trigger>" → expansion; non-matching text is left as-is.
+    let clean = pipe.snippets.apply(&clean);
 
     if let Err(e) = paste::paste_text(&clean) {
         sink(EngineEvent::Error(format!("paste: {e}")));

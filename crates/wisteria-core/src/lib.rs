@@ -21,6 +21,7 @@ pub mod format;
 pub mod hotkey;
 pub mod models;
 pub mod paste;
+pub mod snippets;
 
 pub use config::Config;
 
