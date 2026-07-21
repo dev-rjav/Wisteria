@@ -334,12 +334,14 @@ function viewTransforms() {
     </div>`;
 }
 function wireTransforms() {
-  $('fmt-seg').querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => { state.config.format = b.dataset.lvl; saveConfig(); renderMain(); });
+  // Intensity + toggles are discrete choices: save and reload the engine immediately so the change
+  // is live on the next dictation (no 200ms debounce window where a quick dictation misses it).
+  $('fmt-seg').querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => { state.config.format = b.dataset.lvl; saveConfigNow(); renderMain(); });
   $('main').querySelectorAll('.switch[data-key]').forEach((sw) => sw.onclick = () => {
     if (!state.config.transforms) state.config.transforms = {};
     const k = sw.dataset.key;
     state.config.transforms[k] = !state.config.transforms[k];
-    saveConfig();
+    saveConfigNow();
     renderMain();
   });
 }
@@ -386,6 +388,10 @@ function saveGui() { invoke('save_gui_state', { data: state.gui }); }
 function debouncedSaveGui() { clearTimeout(saveGuiTimer); saveGuiTimer = setTimeout(saveGui, 400); }
 let saveCfgTimer = null;
 function saveConfig() { clearTimeout(saveCfgTimer); saveCfgTimer = setTimeout(() => invoke('save_config', { config: state.config }), 200); }
+// Persist + reload the engine immediately (no debounce). Used for discrete controls like the
+// Transforms toggles and intensity, so the change applies to the very next dictation. Returns the
+// invoke promise so callers can await the round-trip if they want.
+function saveConfigNow() { clearTimeout(saveCfgTimer); return invoke('save_config', { config: state.config }); }
 
 /* ---------- settings modal ---------- */
 async function openSettings() {
