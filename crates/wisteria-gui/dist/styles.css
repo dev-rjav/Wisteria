@@ -48,7 +48,10 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 /* ---------- app layout ---------- */
 .app {
   position: fixed; top: 44px; left: 0; right: 0; bottom: 0;
-  display: grid; grid-template-columns: 236px 1fr; min-height: 0;
+  display: grid; grid-template-columns: 236px 1fr;
+  /* Clamp the single row to the container height so each column scrolls internally instead of
+     growing the row — otherwise a tall page stretched the sidebar and the footer drifted. */
+  grid-template-rows: minmax(0, 1fr); min-height: 0;
   transition: grid-template-columns .3s ease;
 }
 .app.with-right { grid-template-columns: 236px 1fr 308px; }
