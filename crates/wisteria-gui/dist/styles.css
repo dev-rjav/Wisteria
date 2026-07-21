@@ -23,7 +23,11 @@ body {
 a { color: var(--magenta); text-decoration: none; }
 a:hover { color: var(--magenta-light); }
 button, input, textarea, select { font-family: 'Doto', ui-monospace, monospace; }
-input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .5) !important; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: rgba(232, 121, 249, .5) !important; }
+/* Render native <select> controls (and their popup lists) dark so the options are readable, not
+   dark text on a white background. */
+select { color-scheme: dark; cursor: pointer; }
+select option { background: #17171a; color: var(--ink); }
 ::placeholder { color: #5a5a60; }
 ::-webkit-scrollbar { width: 9px; }
 ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .09); border-radius: 9px; }
@@ -46,18 +50,16 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 .tb-close:hover { color: var(--magenta); }
 
 /* ---------- app layout ---------- */
+/* Flex row of fixed-height columns. Each column is height:100% of the (fixed-height) app and
+   scrolls internally, so a tall page can never stretch the sidebar and drift its footer. */
 .app {
   position: fixed; top: 44px; left: 0; right: 0; bottom: 0;
-  display: grid; grid-template-columns: 236px 1fr;
-  /* Clamp the single row to the container height so each column scrolls internally instead of
-     growing the row — otherwise a tall page stretched the sidebar and the footer drifted. */
-  grid-template-rows: minmax(0, 1fr); min-height: 0;
-  transition: grid-template-columns .3s ease;
+  display: flex; overflow: hidden;
 }
-.app.with-right { grid-template-columns: 236px 1fr 308px; }
 
 /* ---------- sidebar ---------- */
 .sidebar {
+  width: 236px; flex-shrink: 0; height: 100%;
   display: flex; flex-direction: column; padding: 22px 16px;
   border-right: 1px solid var(--hair); gap: 22px; min-height: 0;
 }
@@ -81,9 +83,10 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 .sidebar-footer { flex-shrink: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 14px; border-top: 1px solid var(--hair); }
 .side-link { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 9px; color: #9a9aa0; cursor: pointer; font-size: 13px; letter-spacing: .5px; }
 .side-link:hover { background: rgba(255, 255, 255, .04); }
+.side-link.active { background: rgba(232, 121, 249, .12); color: var(--magenta-light); }
 
 /* ---------- main ---------- */
-.main { overflow-y: auto; padding: 34px 36px 160px; min-height: 0; }
+.main { flex: 1 1 auto; min-width: 0; height: 100%; overflow-y: auto; padding: 34px 36px 160px; min-height: 0; }
 .page-title { font-size: 28px; font-weight: 800; letter-spacing: .5px; }
 .page-sub { margin-top: 8px; color: var(--muted); font-size: 14px; letter-spacing: .5px; }
 
@@ -172,7 +175,9 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 }
 
 /* right panel */
-.right { overflow-y: auto; padding: 30px 22px 160px; border-left: 1px solid var(--hair); display: flex; flex-direction: column; gap: 18px; min-height: 0; }
+/* Shown only on the Dictation page (the app gets `.with-right`); otherwise it takes no space. */
+.right { display: none; width: 308px; flex-shrink: 0; height: 100%; overflow-y: auto; padding: 30px 22px 160px; border-left: 1px solid var(--hair); flex-direction: column; gap: 18px; min-height: 0; }
+.app.with-right .right { display: flex; }
 .right-stats { display: flex; flex-direction: column; gap: 16px; }
 .right-stat { display: flex; align-items: baseline; gap: 10px; }
 .right-stat .v { font-size: 32px; font-weight: 800; color: var(--magenta-light); line-height: 1; }

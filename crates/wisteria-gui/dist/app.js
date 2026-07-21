@@ -35,7 +35,6 @@ const state = {
 const NAV = [
   ['Dictation', '●'], ['Insights', '▤'], ['Dictionary', '▦'],
   ['Snippets', '✂'], ['Transforms', '✦'], ['Style', '❖'], ['Ask AI', '✧'], ['Scratchpad', '▭'],
-  ['Report', '⚑'],
 ];
 
 /* ---------- init ---------- */
@@ -141,6 +140,8 @@ function wireSidebar() {
   $('open-settings').onclick = openSettings;
   $('open-help').onclick = () => openUrl('https://github.com/dev-rjav/Wisteria');
   $('link-github').onclick = (e) => { e.preventDefault(); openUrl('https://github.com/dev-rjav/Wisteria'); };
+  // Report is a footer action (not a feature nav item): open its page in the main area.
+  $('open-report').onclick = () => { state.active = 'Report'; renderNav(); renderMain(); renderRight(); };
 }
 
 function openUrl(u) { if (TAURI && TAURI.opener) TAURI.opener.openUrl(u); else window.open(u, '_blank'); }
@@ -219,6 +220,9 @@ function renderNav() {
   $('nav').querySelectorAll('[data-nav]').forEach((n) => {
     n.onclick = () => { state.active = n.dataset.nav; renderAll(); };
   });
+  // Reflect the Report page (a footer item) as active on its footer link.
+  const rep = $('open-report');
+  if (rep) rep.classList.toggle('active', state.active === 'Report');
 }
 
 function renderRight() {
