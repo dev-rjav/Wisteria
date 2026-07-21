@@ -30,7 +30,6 @@ const state = {
   formatterModels: { reachable: false, selected: '', models: [] },
   transcriptionModels: [],
   pulling: {},       // model -> { percent, status }
-  defaultPrompt: '', // built-in formatter prompt (fetched lazily for the Settings editor)
 };
 
 const NAV = [
@@ -478,15 +477,6 @@ function renderSettings() {
     </div>
 
     <div class="setting">
-      <div class="section-label">FORMATTING PROMPT</div>
-      <div class="page-sub" style="font-size:11px;margin:6px 0 4px">The system prompt sent to the formatting model. Leave the default unless you know what you're changing — it's tuned to avoid the model replying instead of transcribing.</div>
-      <textarea class="prompt-area" id="f-prompt" spellcheck="false" placeholder="Loading default prompt…">${esc(c.formatter_prompt || '')}</textarea>
-      <div class="row" style="margin-top:8px;justify-content:flex-end;gap:8px">
-        <button class="btn-rec" id="prompt-reset">RESET TO DEFAULT</button>
-      </div>
-    </div>
-
-    <div class="setting">
       <div class="section-label">ADVANCED</div>
       <div class="field-grid">
         <div class="field"><label>OLLAMA URL</label><input id="f-url" value="${esc(c.formatter_url || '')}"></div>
@@ -496,7 +486,17 @@ function renderSettings() {
 
     <div class="modal-footer">
       <span class="v">WISTERIA v0.1 · MIT · OPEN SOURCE</span>
-      <a class="os-link" id="coffee" href="#" style="border-color:#f5d000;color:#f5d000">★ STAR THE REPO</a>
+      <div class="footer-links">
+        <a class="os-link" id="coffee" href="#" style="border-color:#f5d000;color:#f5d000">★ STAR THE REPO</a>
+        <a class="kofi-btn" id="kofi" href="#" title="Support Wisteria on Ko-fi">
+          <svg class="kofi-cup" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path d="M3 7h13.5v4.5A4.5 4.5 0 0 1 12 16H7.5A4.5 4.5 0 0 1 3 11.5V7Z" fill="#fff"/>
+            <path d="M16.5 8H18a2.5 2.5 0 0 1 0 5h-1.5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M9.7 8.5c1-.8 2.45-.2 2.45 1.05 0 1.15-1.65 2.05-2.45 2.65-.8-.6-2.45-1.5-2.45-2.65 0-1.25 1.45-1.85 2.45-1.05Z" fill="#FF5E5B"/>
+          </svg>
+          <span>Support me on <b>Ko&#8209;fi</b></span>
+        </a>
+      </div>
     </div>`;
 
   // wire
@@ -509,6 +509,7 @@ function renderSettings() {
     renderSettings();
   };
   $('coffee').onclick = (e) => { e.preventDefault(); openUrl('https://github.com/dev-rjav/Wisteria'); };
+  $('kofi').onclick = (e) => { e.preventDefault(); openUrl('https://ko-fi.com/devrjav'); };
 
   renderDeviceDD();
   renderTransDD();
@@ -518,25 +519,6 @@ function renderSettings() {
   $('fmt-level').querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => { state.config.format = b.dataset.lvl; saveConfig(); renderSettings(); });
   $('f-url').onchange = () => { state.config.formatter_url = $('f-url').value.trim(); saveConfig(); };
   $('f-timeout').onchange = () => { state.config.formatter_timeout_ms = parseInt($('f-timeout').value, 10) || 20000; saveConfig(); };
-
-  wirePromptEditor();
-}
-
-/* Formatting-prompt editor: empty config value shows the built-in default as a placeholder so the
-   user can see what they're overriding. Saving stores the edited text; Reset clears the override. */
-async function wirePromptEditor() {
-  const ta = $('f-prompt'); if (!ta) return;
-  if (!state.defaultPrompt) state.defaultPrompt = await safeInvoke('default_formatter_prompt', undefined, '');
-  // Show the default in the box when the user hasn't set a custom prompt.
-  if (!ta.value.trim() && state.defaultPrompt) ta.value = state.defaultPrompt;
-  ta.oninput = () => {
-    const v = ta.value;
-    // Treat "same as default" as no override, so future default improvements still apply.
-    state.config.formatter_prompt = (v.trim() === state.defaultPrompt.trim()) ? '' : v;
-    saveConfig();
-  };
-  const reset = $('prompt-reset');
-  if (reset) reset.onclick = () => { ta.value = state.defaultPrompt; state.config.formatter_prompt = ''; saveConfig(); };
 }
 
 /* generic dropdown renderer */
