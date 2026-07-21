@@ -116,6 +116,11 @@ pub struct Config {
     /// The spoken keyword that precedes a snippet trigger (default `"snippet"`). Saying this word
     /// followed by a snippet's trigger expands it; on its own it's left as ordinary text.
     pub snippet_keyword: String,
+    /// Enable "Ask AI" mode: a keyword-prefixed dictation is sent to the LLM as a request and the
+    /// generated answer is pasted (instead of the usual transcript cleanup). Off by default.
+    pub ask_ai_enabled: bool,
+    /// The spoken keyword that opens an Ask-AI request (default `"assistant"`).
+    pub ask_ai_keyword: String,
 }
 
 impl Default for Config {
@@ -135,6 +140,8 @@ impl Default for Config {
             dictionary: Vec::new(),
             snippets: Vec::new(),
             snippet_keyword: "snippet".to_string(),
+            ask_ai_enabled: false,
+            ask_ai_keyword: "assistant".to_string(),
         }
     }
 }

@@ -392,6 +392,155 @@ impl Formatter {
     }
 }
 
+/// System prompt for **Ask AI** mode: generate the requested deliverable and nothing else.
+const ASK_AI_SYSTEM: &str = r#"You are a writing assistant inside a dictation app. The user speaks a request and you return the finished text they asked for, ready to paste directly into whatever they are writing.
+
+Rules:
+- Output ONLY the requested deliverable itself — the email, message, paragraph, list, or code. Nothing else.
+- Do NOT begin with any preamble or framing such as "Sure", "Certainly", "Of course", "Here is", "Here's", "I'd be happy to", "Below is", or "Absolutely".
+- Do NOT add any commentary, notes, disclaimers, or follow-up questions before or after it.
+- Do NOT wrap the output in quotation marks or code fences, unless the deliverable itself is code.
+- Use real line breaks, with blank lines between paragraphs, so it is properly formatted.
+- If it is an email or letter, include an appropriate greeting and sign-off, but no text describing the email.
+
+Return only the final text, nothing more."#;
+
+/// The **Ask AI** generator: when enabled, a keyword-prefixed dictation is answered by the LLM and
+/// the reply is pasted (rather than cleaned up). Uses the same Ollama model as the formatter, so
+/// output quality depends entirely on that model.
+pub struct AskAi {
+    client: reqwest::blocking::Client,
+    url: String,
+    model: String,
+    /// Normalized keyword tokens the dictation must open with to trigger a request.
+    keyword: Vec<String>,
+}
+
+impl AskAi {
+    /// Build if `ask_ai_enabled` and the model is reachable; otherwise `None` (mode inactive).
+    pub fn new(config: &Config) -> Option<AskAi> {
+        if !config.ask_ai_enabled {
+            return None;
+        }
+        let keyword: Vec<String> = config
+            .ask_ai_keyword
+            .split_whitespace()
+            .map(normalize_word)
+            .filter(|w| !w.is_empty())
+            .collect();
+        if keyword.is_empty() {
+            return None;
+        }
+        let url = config.formatter_url.trim_end_matches('/').to_string();
+        let model = config.formatter_model.clone();
+        // Generation can take longer than cleanup, so use a generous timeout.
+        let timeout = config.formatter_timeout_ms.max(60_000);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(timeout))
+            .build()
+            .ok()?;
+        match model_available(&client, &url, &model) {
+            Ok(true) => {
+                warm_up(&url, &model);
+                info!(model = %model, keyword = ?keyword, "Ask AI ready");
+                Some(AskAi { client, url, model, keyword })
+            }
+            _ => {
+                warn!(model = %model, "Ask AI enabled but model/Ollama unavailable; mode inactive");
+                None
+            }
+        }
+    }
+
+    /// If `raw` opens with the keyword, return the request text after it (or `None` if it doesn't,
+    /// or nothing was said after the keyword).
+    pub fn request_from(&self, raw: &str) -> Option<String> {
+        let tokens: Vec<&str> = raw.split_whitespace().collect();
+        let k = self.keyword.len();
+        if tokens.len() <= k {
+            return None;
+        }
+        // Match the leading tokens against the keyword (tolerant of small ASR variation).
+        for (i, kw) in self.keyword.iter().enumerate() {
+            let got = normalize_word(tokens[i]);
+            if &got != kw && strsim::jaro_winkler(&got, kw) < 0.9 {
+                return None;
+            }
+        }
+        // Rebuild the remainder from the original text, dropping a leading comma/space.
+        let request = tokens[k..].join(" ");
+        let request = request.trim_start_matches([',', ' ', '.', ':']).trim();
+        if request.is_empty() {
+            None
+        } else {
+            Some(request.to_string())
+        }
+    }
+
+    /// Generate a reply to `request`. Returns `None` on any failure (caller reports an error).
+    pub fn generate(&self, request: &str) -> Option<String> {
+        let body = ChatRequest {
+            model: &self.model,
+            stream: false,
+            think: false,
+            messages: vec![
+                ChatMessage { role: "system", content: ASK_AI_SYSTEM },
+                ChatMessage { role: "user", content: request },
+            ],
+            options: ChatOptions { temperature: 0.5 },
+        };
+        let resp: ChatResponse = self
+            .client
+            .post(format!("{}/api/chat", self.url))
+            .json(&body)
+            .send()
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json()
+            .ok()?;
+        let out = strip_generated_wrapper(&strip_reasoning(&resp.message.content));
+        if out.trim().is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+}
+
+/// Lowercase alphanumerics of a single token (for keyword matching).
+fn normalize_word(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// Remove a leftover conversational wrapper from generated text: surrounding code fences and a
+/// leading meta line like "Sure, here's the email:". Conservative — only strips an opening line that
+/// both starts with a known opener AND ends with a colon.
+fn strip_generated_wrapper(text: &str) -> String {
+    let mut t = text.trim();
+    // Strip a single wrapping ``` code fence.
+    if let Some(rest) = t.strip_prefix("```") {
+        if let Some(end) = rest.rfind("```") {
+            // Drop an optional language tag on the first line.
+            let inner = &rest[..end];
+            t = inner.splitn(2, '\n').nth(1).unwrap_or(inner).trim();
+        }
+    }
+    let mut lines = t.lines();
+    if let Some(first) = lines.clone().next() {
+        let fl = first.trim().to_lowercase();
+        const OPENERS: [&str; 9] = [
+            "sure", "certainly", "of course", "here is", "here's", "here are",
+            "i'd be happy", "below is", "absolutely",
+        ];
+        if fl.ends_with(':') && OPENERS.iter().any(|o| fl.starts_with(o)) {
+            lines.next(); // drop the meta line
+            return lines.collect::<Vec<_>>().join("\n").trim().to_string();
+        }
+    }
+    t.to_string()
+}
+
 /// Preload `model` into memory via Ollama's `/api/generate` (empty prompt loads the model).
 /// Uses a generous timeout since the cold load can take many seconds; best-effort (logs on
 /// failure, never fatal).
@@ -639,6 +788,17 @@ mod tests {
         // A genuine dictation that merely starts with a normal word must NOT trip it.
         assert!(!looks_like_meta_reply("Please help me fix this issue.", "please help me fix this issue"));
         assert!(!looks_like_meta_reply("Send the report by Tuesday.", "send the report by tuesday"));
+    }
+
+    #[test]
+    fn ask_ai_strips_wrapper_but_keeps_real_content() {
+        assert_eq!(
+            strip_generated_wrapper("Sure, here's the email:\n\nDear Sam,\nThanks."),
+            "Dear Sam,\nThanks."
+        );
+        assert_eq!(strip_generated_wrapper("```\ncode here\n```"), "code here");
+        // A genuine email greeting must NOT be treated as a wrapper.
+        assert_eq!(strip_generated_wrapper("Dear Sam,\nThanks."), "Dear Sam,\nThanks.");
     }
 
     #[test]

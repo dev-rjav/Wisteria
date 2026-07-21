@@ -239,6 +239,8 @@ struct Pipeline {
     dictionary: crate::dictionary::Matcher,
     /// Voice snippet expander, applied to the final text after formatting (verbatim expansions).
     snippets: crate::snippets::Expander,
+    /// "Ask AI" generator (when enabled): keyword-prefixed dictations are answered by the LLM.
+    ask_ai: Option<crate::format::AskAi>,
 }
 
 /// Build (or rebuild) the pipeline from `config`, emitting warming/error events.
@@ -272,6 +274,7 @@ fn build_pipeline(config: &Config, sink: &EventSink) -> Pipeline {
         formatter,
         dictionary: crate::dictionary::Matcher::new(&config.dictionary),
         snippets: crate::snippets::Expander::new(&config.snippet_keyword, &config.snippets),
+        ask_ai: crate::format::AskAi::new(config),
     }
 }
 
@@ -325,6 +328,12 @@ fn worker_loop(
                     let rebuild_dict = new.dictionary != config.dictionary;
                     let rebuild_snip = new.snippets != config.snippets
                         || new.snippet_keyword != config.snippet_keyword;
+                    // Ask AI shares the formatter model/URL, so rebuild it when those change too.
+                    let rebuild_ai = new.ask_ai_enabled != config.ask_ai_enabled
+                        || new.ask_ai_keyword != config.ask_ai_keyword
+                        || new.formatter_model != config.formatter_model
+                        || new.formatter_url != config.formatter_url
+                        || new.formatter_timeout_ms != config.formatter_timeout_ms;
                     if rebuild_audio {
                         pipe.recorder = match Recorder::new(&new.input_device) {
                             Ok(r) => Some(r),
@@ -346,6 +355,9 @@ fn worker_loop(
                     }
                     if rebuild_snip {
                         pipe.snippets = crate::snippets::Expander::new(&new.snippet_keyword, &new.snippets);
+                    }
+                    if rebuild_ai {
+                        pipe.ask_ai = crate::format::AskAi::new(&new);
                     }
                     config = new;
                     sink(EngineEvent::Phase(if enabled { Phase::Idle } else { Phase::Disabled }));
@@ -429,6 +441,31 @@ fn handle_utterance(pipe: &mut Pipeline, sink: &EventSink) {
     // matches of the user's custom words before formatting, and is the only dictionary pass when
     // the formatter is off. The LLM also gets the term list (see format::compose_prompt).
     let raw = pipe.dictionary.apply(&raw);
+
+    // Ask AI mode: if enabled and the dictation opens with the keyword, send the rest to the LLM as
+    // a request and paste its generated answer instead of the cleaned-up transcript.
+    if let Some(ai) = &pipe.ask_ai {
+        if let Some(request) = ai.request_from(&raw) {
+            match ai.generate(&request) {
+                Some(reply) => {
+                    if let Err(e) = paste::paste_text(&reply) {
+                        sink(EngineEvent::Error(format!("paste: {e}")));
+                    }
+                    let words = reply.split_whitespace().count();
+                    sink(EngineEvent::Transcript {
+                        raw,
+                        clean: reply,
+                        ms: start.elapsed().as_millis(),
+                        words,
+                    });
+                }
+                None => sink(EngineEvent::Error(
+                    "Ask AI: no reply from the model (is Ollama running?)".into(),
+                )),
+            }
+            return;
+        }
+    }
 
     let clean = match &pipe.formatter {
         Some(f) => f.clean(&raw),

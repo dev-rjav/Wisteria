@@ -34,7 +34,7 @@ const state = {
 
 const NAV = [
   ['Dictation', '●'], ['Insights', '▤'], ['Dictionary', '▦'],
-  ['Snippets', '✂'], ['Transforms', '✦'], ['Style', '❖'], ['Scratchpad', '▭'],
+  ['Snippets', '✂'], ['Transforms', '✦'], ['Style', '❖'], ['Ask AI', '✧'], ['Scratchpad', '▭'],
 ];
 
 /* ---------- init ---------- */
@@ -255,6 +255,7 @@ function renderMain() {
     case 'Snippets': m.innerHTML = viewSnippets(); wireSnippets(); break;
     case 'Transforms': m.innerHTML = viewTransforms(); wireTransforms(); break;
     case 'Style': m.innerHTML = viewStyle(); wireStyle(); break;
+    case 'Ask AI': m.innerHTML = viewAskAi(); wireAskAi(); break;
     case 'Scratchpad': m.innerHTML = viewScratchpad(); wireScratchpad(); break;
   }
 }
@@ -557,6 +558,31 @@ function viewStyle() {
 function wireStyle() {
   // Save immediately so the engine reloads with the new voice for the next dictation.
   $('main').querySelectorAll('[data-style]').forEach((c) => c.onclick = () => { state.config.style = c.dataset.style; saveConfigNow(); renderMain(); });
+}
+
+/* ---------- Ask AI (config.ask_ai_enabled + keyword; uses the formatter model) ---------- */
+function viewAskAi() {
+  const on = !!state.config.ask_ai_enabled;
+  const kw = state.config.ask_ai_keyword || 'assistant';
+  const model = state.config.formatter_model || '—';
+  return `
+    <h1 class="page-title">Ask AI</h1>
+    <p class="page-sub">Speak a request and paste the AI's answer instead of a transcript. Say your keyword, then your request — e.g. “<b>${esc(kw)}, write a professional email following up on a lead</b>” pastes the finished email, formatted, with none of the AI's chatter around it (no “Sure, here's your email”).</p>
+    <div class="toggle-row mt-22"><div class="meta"><div class="toggle-name">Enable Ask AI</div><div class="toggle-desc">When on, a dictation that starts with the keyword is answered by the model. Otherwise it's normal dictation.</div></div>
+      <div class="switch ${on ? 'on' : ''}" id="ai-toggle"><div class="knob"></div></div></div>
+    <div class="mt-16" style="${on ? '' : 'opacity:.4;pointer-events:none'}">
+      <div class="row" style="align-items:center;gap:10px">
+        <span class="section-label">KEYWORD</span>
+        <input class="input" id="ai-kw" style="width:180px" value="${esc(kw)}" placeholder="assistant">
+      </div>
+      <p class="page-sub" style="font-size:11px;margin-top:8px">Say this word first, then your request. Pick something you rarely say by accident.</p>
+    </div>
+    <div class="warn-banner mt-22" style="border-color:rgba(232,121,249,.3);color:var(--ink)">⚠ Quality depends <b>entirely on the model</b> you've selected as your <b>Formatting Model</b> in Settings (currently <b>${esc(model)}</b>) — Ask AI runs through that same local Ollama model. A small model writes rough drafts; a larger one (7B+/12B) writes noticeably better emails. Ollama must be running.</div>`;
+}
+function wireAskAi() {
+  $('ai-toggle').onclick = () => { state.config.ask_ai_enabled = !state.config.ask_ai_enabled; saveConfigNow(); renderMain(); };
+  const kw = $('ai-kw');
+  if (kw) kw.onchange = () => { state.config.ask_ai_keyword = kw.value.trim() || 'assistant'; saveConfigNow(); renderMain(); };
 }
 
 /* ---------- Scratchpad ---------- */
