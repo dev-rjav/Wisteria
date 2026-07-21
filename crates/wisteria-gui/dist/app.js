@@ -565,7 +565,13 @@ function renderTransDD() {
 
 function renderFmtDD() {
   const cur = state.config.formatter_model || '';
-  const models = state.formatterModels.models;
+  const models = (state.formatterModels.models || []).slice();
+  // Always surface the currently-selected model as an option, even if Ollama was slow/unreachable
+  // when the list was fetched (so it isn't in `models`). Otherwise the model the engine is actually
+  // using wouldn't appear in the menu on reopen. Treat it as installed since it's the active model.
+  if (cur && !models.some((m) => m.name === cur)) {
+    models.unshift({ name: cur, installed: true, size: '', note: 'Currently in use', recommended: false });
+  }
   const label = cur || 'Select a model';
   const html = models.map((m) => {
     const tags = [];
