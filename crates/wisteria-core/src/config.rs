@@ -20,6 +20,36 @@ pub enum FormatLevel {
     High,
 }
 
+/// Per-behavior formatter toggles, surfaced in the app's **Transforms** page. Each flag, when
+/// turned **off**, appends an explicit negative override to the formatter prompt that suppresses
+/// the corresponding built-in rule. When every flag is on (the default) the base prompt runs
+/// unmodified. Only meaningful when [`Config::format`] is not [`FormatLevel::Off`] — at `Off` the
+/// LLM stage is skipped entirely, so transforms don't apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Transforms {
+    /// Add/repair punctuation and sentence boundaries.
+    pub auto_punctuation: bool,
+    /// Drop meaningless fillers/hesitations (um, uh, like, you know).
+    pub remove_fillers: bool,
+    /// Fix capitalization of sentence starts, names, and acronyms.
+    pub smart_capitalization: bool,
+    /// Normalize dictated emails, URLs, numbers, dates, and times.
+    pub email_formatting: bool,
+}
+
+impl Default for Transforms {
+    fn default() -> Self {
+        // All on = the base prompt's full cleanup behavior.
+        Transforms {
+            auto_punctuation: true,
+            remove_fillers: true,
+            smart_capitalization: true,
+            email_formatting: true,
+        }
+    }
+}
+
 /// Top-level user configuration. Missing fields fall back to [`Default`] on load, so upgrades
 /// that add fields don't break existing config files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +75,8 @@ pub struct Config {
     /// Custom formatter system prompt. Empty = use the built-in default
     /// ([`crate::format::default_prompt`]). Editable from the app's Settings.
     pub formatter_prompt: String,
+    /// Per-behavior formatter toggles (the app's Transforms page).
+    pub transforms: Transforms,
 }
 
 impl Default for Config {
@@ -59,6 +91,7 @@ impl Default for Config {
             formatter_model: "qwen3:1.7b".to_string(),
             formatter_timeout_ms: 20000,
             formatter_prompt: String::new(),
+            transforms: Transforms::default(),
         }
     }
 }

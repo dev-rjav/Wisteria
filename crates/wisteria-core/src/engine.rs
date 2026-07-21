@@ -298,7 +298,9 @@ fn worker_loop(
                     let rebuild_fmt = new.format != config.format
                         || new.formatter_model != config.formatter_model
                         || new.formatter_url != config.formatter_url
-                        || new.formatter_timeout_ms != config.formatter_timeout_ms;
+                        || new.formatter_timeout_ms != config.formatter_timeout_ms
+                        || new.formatter_prompt != config.formatter_prompt
+                        || new.transforms != config.transforms;
                     if rebuild_audio {
                         pipe.recorder = match Recorder::new(&new.input_device) {
                             Ok(r) => Some(r),

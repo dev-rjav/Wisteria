@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::config::{Config, FormatLevel};
+use crate::config::{Config, FormatLevel, Transforms};
 
 /// Base cleanup instructions. An intensity line is appended per request.
 ///
@@ -493,6 +493,8 @@ pub struct Formatter {
     level: FormatLevel,
     /// Effective base system prompt (user override from config, or the built-in default).
     prompt: String,
+    /// Per-behavior toggles; each disabled one adds a negative override to the prompt.
+    transforms: Transforms,
 }
 
 impl Formatter {
@@ -529,6 +531,7 @@ impl Formatter {
                     model,
                     level: config.format,
                     prompt,
+                    transforms: config.transforms,
                 })
             }
             Ok(false) => {
@@ -575,8 +578,9 @@ impl Formatter {
     /// Issue the `/api/chat` request and return the assistant message content.
     fn request(&self, raw: &str) -> reqwest::Result<String> {
         let system = format!(
-            "{}\n\nINTENSITY: {}\n{}",
+            "{}{}\n\nINTENSITY: {}\n{}",
             self.prompt,
+            transform_overrides(&self.transforms),
             intensity_line(self.level),
             GUARD
         );
@@ -635,6 +639,45 @@ fn model_available(client: &reqwest::blocking::Client, url: &str, model: &str) -
         .error_for_status()?
         .json()?;
     Ok(tags.models.iter().any(|m| m.name == model))
+}
+
+/// Build the transform-override block from the user's toggles. Each **disabled** toggle appends an
+/// explicit negative instruction that suppresses the matching built-in rule; enabled toggles add
+/// nothing (the base prompt already covers them). Returns `""` when every toggle is on, so the
+/// default prompt is untouched. Prepended with blank lines so it slots between the base prompt and
+/// the INTENSITY line.
+fn transform_overrides(t: &Transforms) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    if !t.remove_fillers {
+        lines.push(
+            "- Do NOT remove filler words, hesitations, repetitions, or false starts \
+             (um, uh, like, you know); keep every word exactly as spoken.",
+        );
+    }
+    if !t.auto_punctuation {
+        lines.push(
+            "- Do NOT add, remove, or change punctuation, sentence boundaries, or paragraph \
+             breaks; keep punctuation exactly as dictated.",
+        );
+    }
+    if !t.smart_capitalization {
+        lines.push(
+            "- Do NOT change capitalization; leave every letter's case exactly as transcribed.",
+        );
+    }
+    if !t.email_formatting {
+        lines.push(
+            "- Do NOT reformat emails, URLs, numbers, dates, times, currencies, or percentages; \
+             leave them as the plain words that were spoken.",
+        );
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nTRANSFORM OVERRIDES — these override the numbered rules above:\n{}",
+        lines.join("\n")
+    )
 }
 
 /// Per-level guidance appended to the base prompt.
@@ -847,6 +890,28 @@ mod tests {
             strip_transcript_tags("<transcript>\nHello there.\n</transcript>"),
             "Hello there."
         );
+    }
+
+    #[test]
+    fn all_transforms_on_adds_no_overrides() {
+        assert_eq!(transform_overrides(&Transforms::default()), "");
+    }
+
+    #[test]
+    fn disabled_transforms_emit_negative_overrides() {
+        let t = Transforms {
+            remove_fillers: false,
+            auto_punctuation: false,
+            smart_capitalization: true,
+            email_formatting: true,
+        };
+        let block = transform_overrides(&t);
+        assert!(block.contains("TRANSFORM OVERRIDES"));
+        assert!(block.contains("Do NOT remove filler words"));
+        assert!(block.contains("Do NOT add, remove, or change punctuation"));
+        // Enabled toggles contribute nothing.
+        assert!(!block.contains("capitalization"));
+        assert!(!block.contains("reformat emails"));
     }
 
     #[test]

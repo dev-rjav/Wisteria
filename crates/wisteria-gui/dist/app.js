@@ -13,7 +13,7 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 /* ---------- app state ---------- */
 const state = {
   config: null,
-  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', transforms: null, scratch: '' },
+  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', scratch: '' },
   active: 'Dictation',
   phase: 'warming',
   enabled: true,
@@ -38,13 +38,6 @@ const NAV = [
   ['Snippets', '✂'], ['Transforms', '✦'], ['Style', '❖'], ['Scratchpad', '▭'],
 ];
 
-const DEFAULT_TRANSFORMS = [
-  { name: 'Auto punctuation', desc: 'Add commas and periods automatically', on: true },
-  { name: 'Remove filler words', desc: 'Drop "um", "uh", "like"', on: true },
-  { name: 'Smart capitalization', desc: 'Capitalize names and sentence starts', on: true },
-  { name: 'Email formatting', desc: 'Format dictated emails and URLs', on: false },
-];
-
 /* ---------- init ---------- */
 // Every backend call is isolated: one failing command must never blank the whole UI.
 async function safeInvoke(cmd, args, fallback) {
@@ -58,7 +51,6 @@ async function init() {
     state.config = await safeInvoke('get_config', undefined, {});
     const gui = await safeInvoke('get_gui_state', undefined, {});
     Object.assign(state.gui, gui);
-    if (!state.gui.transforms) state.gui.transforms = DEFAULT_TRANSFORMS.map((t) => ({ ...t }));
     // Restore history + counters from the Rust-owned history store so they survive restarts.
     const hist = await safeInvoke('get_history', undefined, { history: [], totalWords: 0, totalDictations: 0 });
     state.history = Array.isArray(hist.history) ? hist.history : [];
@@ -310,27 +302,46 @@ function wireSnippets() {
   $('snip-list').querySelectorAll('.x').forEach((el) => el.onclick = () => { state.gui.snippets.splice(+el.dataset.i, 1); saveGui(); renderMain(); });
 }
 
-/* ---------- Transforms (maps to format level + local prefs) ---------- */
+/* ---------- Transforms (drive the Rust formatter: intensity + per-behavior toggles) ---------- */
+// Each toggle maps to a boolean on config.transforms. When OFF it injects a negative override into
+// the formatter prompt; when every toggle is ON the built-in prompt runs unmodified.
+const TRANSFORM_ITEMS = [
+  { key: 'auto_punctuation', name: 'Auto punctuation', desc: 'Add commas, periods, and sentence breaks' },
+  { key: 'remove_fillers', name: 'Remove filler words', desc: 'Drop "um", "uh", "like", stutters, and false starts' },
+  { key: 'smart_capitalization', name: 'Smart capitalization', desc: 'Capitalize sentence starts, names, and acronyms' },
+  { key: 'email_formatting', name: 'Email & number formatting', desc: 'Format dictated emails, URLs, numbers, dates, and times' },
+];
 function viewTransforms() {
   const fmt = (state.config.format || 'medium');
+  const off = fmt === 'off';
+  const tf = state.config.transforms || {};
   return `
     <h1 class="page-title">Transforms</h1>
-    <p class="page-sub">Cleanups applied after every dictation. Intensity maps to the formatter level.</p>
+    <p class="page-sub">Cleanups the local model applies after every dictation.</p>
     <div class="card mt-22">
       <div class="section-label">FORMATTER INTENSITY</div>
       <div class="seg" id="fmt-seg">
         ${['off', 'light', 'medium', 'high'].map((l) => `<button class="${fmt === l ? 'on' : ''}" data-lvl="${l}">${l.toUpperCase()}</button>`).join('')}
       </div>
+      <div class="page-sub" style="font-size:11px;margin-top:10px">${off
+        ? 'Off — the model is skipped entirely; your raw transcript is pasted exactly as spoken.'
+        : 'Light removes only obvious fillers; Medium is balanced; High is the most thorough. Meaning is always preserved.'}</div>
     </div>
-    <div class="mt-16" style="display:flex;flex-direction:column;gap:10px">
-      ${state.gui.transforms.map((t, i) => `
+    <div class="mt-16 ${off ? 'is-disabled' : ''}" id="tf-list" style="display:flex;flex-direction:column;gap:10px${off ? ';opacity:.4;pointer-events:none' : ''}">
+      ${TRANSFORM_ITEMS.map((t) => `
         <div class="toggle-row"><div class="meta"><div class="toggle-name">${esc(t.name)}</div><div class="toggle-desc">${esc(t.desc)}</div></div>
-        <div class="switch ${t.on ? 'on' : ''}" data-i="${i}"><div class="knob"></div></div></div>`).join('')}
+        <div class="switch ${tf[t.key] ? 'on' : ''}" data-key="${t.key}"><div class="knob"></div></div></div>`).join('')}
     </div>`;
 }
 function wireTransforms() {
   $('fmt-seg').querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => { state.config.format = b.dataset.lvl; saveConfig(); renderMain(); });
-  $('main').querySelectorAll('.switch[data-i]').forEach((sw) => sw.onclick = () => { const i = +sw.dataset.i; state.gui.transforms[i].on = !state.gui.transforms[i].on; saveGui(); renderMain(); });
+  $('main').querySelectorAll('.switch[data-key]').forEach((sw) => sw.onclick = () => {
+    if (!state.config.transforms) state.config.transforms = {};
+    const k = sw.dataset.key;
+    state.config.transforms[k] = !state.config.transforms[k];
+    saveConfig();
+    renderMain();
+  });
 }
 
 /* ---------- Style ---------- */
