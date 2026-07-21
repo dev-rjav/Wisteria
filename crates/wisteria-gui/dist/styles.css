@@ -170,10 +170,12 @@ input:focus, textarea:focus { outline: none; border-color: rgba(232, 121, 249, .
 .os-body { font-size: 12px; color: #a8a8b0; margin: 8px 0 14px; letter-spacing: .5px; line-height: 1.5; }
 .os-link { display: inline-block; padding: 9px 16px; border-radius: 10px; border: 1px solid rgba(232, 121, 249, .4); color: var(--magenta-light); font-size: 12px; font-weight: 700; letter-spacing: 1px; }
 .footer-links { display: flex; align-items: center; gap: 10px; }
-/* Ko-fi brand button: their signature red pill + white cup with a red heart, so it's recognizable. */
-.kofi-btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 999px; background: #FF5E5B; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: .3px; text-decoration: none; box-shadow: 0 2px 9px rgba(255, 94, 91, .38); transition: transform .12s ease, box-shadow .12s ease, background .12s ease; }
-.kofi-btn:hover { background: #ff4a46; transform: translateY(-1px); box-shadow: 0 5px 16px rgba(255, 94, 91, .52); }
-.kofi-btn:active { transform: translateY(0); box-shadow: 0 2px 9px rgba(255, 94, 91, .38); }
+/* Ko-fi button: the green (#207a3f) from the user's Ko-fi widget config + a white cup with the
+   Ko-fi red heart, so it stays recognizable. Rendered locally (no remote widget script) to keep
+   the app fully offline; text uses the app's own font. */
+.kofi-btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 999px; background: #207a3f; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: .3px; text-decoration: none; box-shadow: 0 2px 9px rgba(32, 122, 63, .4); transition: transform .12s ease, box-shadow .12s ease, background .12s ease; }
+.kofi-btn:hover { background: #1b6835; transform: translateY(-1px); box-shadow: 0 5px 16px rgba(32, 122, 63, .55); }
+.kofi-btn:active { transform: translateY(0); box-shadow: 0 2px 9px rgba(32, 122, 63, .4); }
 .kofi-btn .kofi-cup { flex: 0 0 auto; }
 .kofi-btn b { font-weight: 800; }
 

@@ -494,7 +494,7 @@ function renderSettings() {
             <path d="M16.5 8H18a2.5 2.5 0 0 1 0 5h-1.5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
             <path d="M9.7 8.5c1-.8 2.45-.2 2.45 1.05 0 1.15-1.65 2.05-2.45 2.65-.8-.6-2.45-1.5-2.45-2.65 0-1.25 1.45-1.85 2.45-1.05Z" fill="#FF5E5B"/>
           </svg>
-          <span>Support me on <b>Ko&#8209;fi</b></span>
+          <span>Support me on <b>Ko-fi</b></span>
         </a>
       </div>
     </div>`;
@@ -509,7 +509,7 @@ function renderSettings() {
     renderSettings();
   };
   $('coffee').onclick = (e) => { e.preventDefault(); openUrl('https://github.com/dev-rjav/Wisteria'); };
-  $('kofi').onclick = (e) => { e.preventDefault(); openUrl('https://ko-fi.com/devrjav'); };
+  $('kofi').onclick = (e) => { e.preventDefault(); openUrl('https://ko-fi.com/C6P623L57Q'); };
 
   renderDeviceDD();
   renderTransDD();
