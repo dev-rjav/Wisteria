@@ -20,6 +20,24 @@ pub enum FormatLevel {
     High,
 }
 
+/// Writing voice the formatter rewrites the transcript into (the app's **Style** page). `Concise`
+/// is the neutral default — it keeps the speaker's own wording and only cleans up. The others
+/// actively rewrite the tone/structure while still preserving the speaker's meaning and facts (they
+/// never invent content). Only meaningful when [`Config::format`] is not [`FormatLevel::Off`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WritingStyle {
+    /// Faithful cleanup: keep the speaker's wording and tone, minimal edits.
+    #[default]
+    Concise,
+    /// Polished, formal, business-ready prose.
+    Professional,
+    /// Relaxed and conversational.
+    Casual,
+    /// Thorough, structured, and explanatory.
+    Detailed,
+}
+
 /// Per-behavior formatter toggles, surfaced in the app's **Transforms** page. Each flag, when
 /// turned **off**, appends an explicit negative override to the formatter prompt that suppresses
 /// the corresponding built-in rule. When every flag is on (the default) the base prompt runs
@@ -77,6 +95,8 @@ pub struct Config {
     pub formatter_prompt: String,
     /// Per-behavior formatter toggles (the app's Transforms page).
     pub transforms: Transforms,
+    /// Writing voice the formatter rewrites into (the app's Style page).
+    pub style: WritingStyle,
 }
 
 impl Default for Config {
@@ -92,6 +112,7 @@ impl Default for Config {
             formatter_timeout_ms: 20000,
             formatter_prompt: String::new(),
             transforms: Transforms::default(),
+            style: WritingStyle::default(),
         }
     }
 }

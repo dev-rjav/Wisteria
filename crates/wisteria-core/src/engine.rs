@@ -300,7 +300,8 @@ fn worker_loop(
                         || new.formatter_url != config.formatter_url
                         || new.formatter_timeout_ms != config.formatter_timeout_ms
                         || new.formatter_prompt != config.formatter_prompt
-                        || new.transforms != config.transforms;
+                        || new.transforms != config.transforms
+                        || new.style != config.style;
                     if rebuild_audio {
                         pipe.recorder = match Recorder::new(&new.input_device) {
                             Ok(r) => Some(r),

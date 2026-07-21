@@ -13,7 +13,7 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 /* ---------- app state ---------- */
 const state = {
   config: null,
-  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], style: 'Concise', scratch: '' },
+  gui: { dictionary: ['Kubernetes', 'Wisteria', 'oklch', 'async/await'], snippets: [], scratch: '' },
   active: 'Dictation',
   phase: 'warming',
   enabled: true,
@@ -428,23 +428,28 @@ function wireTransforms() {
   refreshEffectivePrompt();
 }
 
-/* ---------- Style ---------- */
+/* ---------- Style (maps to config.style; the formatter rewrites into this voice) ---------- */
+// value = the lowercase enum the backend expects; Concise is the neutral default (faithful cleanup).
 const STYLES = [
-  { name: 'Professional', desc: 'Polished, formal, business-ready.' },
-  { name: 'Casual', desc: 'Relaxed and conversational.' },
-  { name: 'Concise', desc: 'Trim the fat. Straight to the point.' },
-  { name: 'Detailed', desc: 'Thorough, structured, explanatory.' },
+  { value: 'concise', name: 'Concise', desc: 'Keeps the text almost exactly as spoken.' },
+  { value: 'professional', name: 'Professional', desc: 'Polished, formal, and business-ready.' },
+  { value: 'casual', name: 'Casual', desc: 'Relaxed and conversational.' },
+  { value: 'detailed', name: 'Detailed', desc: 'Thorough, structured, and explanatory.' },
 ];
 function viewStyle() {
+  const cur = state.config.style || 'concise';
+  const off = (state.config.format || 'medium') === 'off';
   return `
     <h1 class="page-title">Style</h1>
-    <p class="page-sub">Pick the voice Wisteria writes in.</p>
+    <p class="page-sub">Pick the voice Wisteria writes in. Concise stays faithful to your words; the others rewrite the tone while keeping your meaning.</p>
+    ${off ? '<div class="warn-banner">Styles apply only when formatting is on. Set Transforms → Intensity to Light, Medium, or High.</div>' : ''}
     <div class="grid-2 mt-22">
-      ${STYLES.map((s) => `<div class="style-card ${s.name === state.gui.style ? 'on' : ''}" data-style="${esc(s.name)}"><div class="style-head"><span class="style-name">${esc(s.name)}</span><span class="style-dot"></span></div><div class="style-desc">${esc(s.desc)}</div></div>`).join('')}
+      ${STYLES.map((s) => `<div class="style-card ${s.value === cur ? 'on' : ''}" data-style="${esc(s.value)}"><div class="style-head"><span class="style-name">${esc(s.name)}</span><span class="style-dot"></span></div><div class="style-desc">${esc(s.desc)}</div></div>`).join('')}
     </div>`;
 }
 function wireStyle() {
-  $('main').querySelectorAll('[data-style]').forEach((c) => c.onclick = () => { state.gui.style = c.dataset.style; saveGui(); renderMain(); });
+  // Save immediately so the engine reloads with the new voice for the next dictation.
+  $('main').querySelectorAll('[data-style]').forEach((c) => c.onclick = () => { state.config.style = c.dataset.style; saveConfigNow(); renderMain(); });
 }
 
 /* ---------- Scratchpad ---------- */
