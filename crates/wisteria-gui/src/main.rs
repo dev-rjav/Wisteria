@@ -68,6 +68,36 @@ fn effective_prompt(config: Config) -> String {
     wisteria_core::format::effective_system_prompt(&config)
 }
 
+// ---------- dictionary import/export ----------
+
+/// Write the current dictionary to `path` as a plain word list (one entry per line, with a header
+/// comment). Round-trips with [`import_dictionary`].
+#[tauri::command]
+fn export_dictionary(state: State<AppState>, path: String) -> Result<(), String> {
+    let config = Config::load_or_create(&state.config_path).map_err(|e| e.to_string())?;
+    let mut out = String::from("# Wisteria dictionary — one word or phrase per line. Lines starting with # are ignored.\n");
+    for word in &config.dictionary {
+        out.push_str(word);
+        out.push('\n');
+    }
+    std::fs::write(&path, out).map_err(|e| format!("writing {path}: {e}"))
+}
+
+/// Read a word list from `path` (one entry per line; blank lines and `#` comments ignored) and
+/// return the parsed words. Merging with the existing dictionary is done on the frontend so it uses
+/// the same save/dedupe path as manual edits.
+#[tauri::command]
+fn import_dictionary(path: String) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("reading {path}: {e}"))?;
+    let words = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect();
+    Ok(words)
+}
+
 // ---------- devices ----------
 
 #[tauri::command]
@@ -383,6 +413,7 @@ fn main() {
             show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         // Closing a window hides it (app keeps running in the tray); it never quits the app.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -445,6 +476,8 @@ fn main() {
             save_config,
             default_formatter_prompt,
             effective_prompt,
+            export_dictionary,
+            import_dictionary,
             list_input_devices,
             list_formatter_models,
             list_transcription_models,

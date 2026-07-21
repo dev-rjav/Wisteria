@@ -342,8 +342,14 @@ function dictWords() { return Array.isArray(state.config.dictionary) ? state.con
 function viewDictionary() {
   const words = dictWords();
   return `
-    <h1 class="page-title">Dictionary</h1>
-    <p class="page-sub">Teach Wisteria proper spellings — names, brands, and jargon. It fixes sound-alike transcriptions to the exact spelling you add here (e.g. your name), and keeps their capitalization.</p>
+    <div class="today-row" style="margin-top:0">
+      <h1 class="page-title" style="margin:0">Dictionary</h1>
+      <div class="row" style="gap:8px">
+        <button class="btn-rec" id="dict-import">IMPORT</button>
+        <button class="btn-rec" id="dict-export">EXPORT</button>
+      </div>
+    </div>
+    <p class="page-sub">Teach Wisteria proper spellings — names, brands, and jargon. It fixes sound-alike transcriptions to the exact spelling you add here (e.g. your name), and keeps their capitalization. Import merges into your existing words; export saves them as a plain text file.</p>
     <div class="row mt-22">
       <input class="input" id="dict-input" style="flex:1" placeholder="Add a word or phrase…">
       <button class="btn-primary" id="dict-add">ADD</button>
@@ -358,6 +364,35 @@ function wireDictionary() {
   $('dict-add').onclick = add;
   $('dict-input').onkeydown = (e) => { if (e.key === 'Enter') add(); };
   $('dict-chips').querySelectorAll('.x').forEach((x) => x.onclick = () => { dictWords().splice(+x.dataset.i, 1); saveConfigNow(); renderMain(); });
+  $('dict-export').onclick = exportDictionary;
+  $('dict-import').onclick = importDictionary;
+}
+
+async function exportDictionary() {
+  const dialog = TAURI && TAURI.dialog;
+  if (!dialog) return;
+  const path = await dialog.save({ defaultPath: 'wisteria-dictionary.txt', filters: [{ name: 'Word list', extensions: ['txt'] }] });
+  if (!path) return;
+  await safeInvoke('export_dictionary', { path });
+}
+
+async function importDictionary() {
+  const dialog = TAURI && TAURI.dialog;
+  if (!dialog) return;
+  const selected = await dialog.open({ multiple: false, filters: [{ name: 'Word list', extensions: ['txt', 'csv'] }] });
+  if (!selected) return;
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  const words = await safeInvoke('import_dictionary', { path }, []);
+  // Append to existing words, de-duplicating case-insensitively (existing words are kept).
+  const cur = dictWords();
+  const seen = new Set(cur.map((w) => String(w).toLowerCase()));
+  let added = 0;
+  for (const w of words) {
+    const t = String(w).trim();
+    if (t && !seen.has(t.toLowerCase())) { cur.push(t); seen.add(t.toLowerCase()); added++; }
+  }
+  if (added) saveConfigNow();
+  renderMain();
 }
 
 /* ---------- Snippets ---------- */

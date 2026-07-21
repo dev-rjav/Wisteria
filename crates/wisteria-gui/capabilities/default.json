@@ -17,6 +17,7 @@
     "core:window:allow-set-position",
     "core:window:allow-set-always-on-top",
     "core:event:default",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }
