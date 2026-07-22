@@ -11,6 +11,21 @@ all in a few hundred milliseconds. No cloud, no account, no telemetry.
 
 ---
 
+## Download
+
+**Windows 10/11 (64-bit):**
+[⬇ Download the Wisteria installer](https://github.com/dev-rjav/Wisteria/releases/latest/download/Wisteria-Setup-Windows-x64.exe)
+
+Just download and run it — no extra steps, no build tools required. The installer sets up the app,
+adds the WebView2 runtime if needed, and offers to install the optional local formatter (Ollama).
+On first launch, Wisteria downloads its speech-to-text model automatically.
+
+Prefer to browse versions and release notes? See the
+[Releases page](https://github.com/dev-rjav/Wisteria/releases). macOS and Linux builds are on the
+roadmap.
+
+---
+
 ## Why Wisteria
 
 Most polished dictation tools stream your voice to proprietary models on rented GPUs. Wisteria
@@ -156,7 +171,10 @@ cargo run -p wisteria-gui
 
 ---
 
-## Windows installer
+## Building the Windows installer
+
+> Just want to use Wisteria? Grab the prebuilt installer from [Download](#download) above — you
+> don't need any of this. This section is for building the installer yourself.
 
 Wisteria ships as a **single standalone GUI installer** (`.exe`) built with Tauri's NSIS bundler.
 End users need **no** Rust, MSVC, or build tools — only the build machine does. The installer:
