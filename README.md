@@ -156,6 +156,39 @@ cargo run -p wisteria-gui
 
 ---
 
+## Windows installer
+
+Wisteria ships as a **single standalone GUI installer** (`.exe`) built with Tauri's NSIS bundler.
+End users need **no** Rust, MSVC, or build tools — only the build machine does. The installer:
+
+- ships the prebuilt app and **auto-installs the WebView2 runtime** if it's missing;
+- installs **per-user** (no admin / UAC prompt);
+- after install, **prompts to install Ollama** for the optional local AI formatter model — decline
+  and Wisteria still runs transcription-only (see
+  [`crates/wisteria-gui/installer/hooks.nsh`](crates/wisteria-gui/installer/hooks.nsh)).
+
+Parakeet (speech-to-text) and the formatter model are fetched on first run / from inside the app,
+so the installer stays small (~10 MB).
+
+**Build it** (on a Windows machine with the prerequisites above + `cargo install tauri-cli --version '^2'`):
+
+```powershell
+pwsh ./scripts/build-windows-installer.ps1
+# → target/release/bundle/nsis/Wisteria_<version>_x64-setup.exe
+```
+
+or directly:
+
+```powershell
+cd crates/wisteria-gui
+cargo tauri build --bundles nsis
+```
+
+> macOS and Linux installers (`.dmg`, `.AppImage`/`.deb`) come from the same `cargo tauri build`
+> on those OSes and are tracked for a later phase.
+
+---
+
 ## Configuration
 
 Everything is editable in the GUI, and persisted to `config.toml`. Highlights:
