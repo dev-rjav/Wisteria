@@ -1,4 +1,4 @@
-//! Wisteria desktop app (Tauri v2). Wraps the dictation engine in the Flow App workspace UI.
+//! Wisteria desktop app (Tauri v2). Wraps the dictation engine in the workspace UI.
 //!
 //! The Rust side owns the [`Engine`] and exposes commands the frontend calls to read/write every
 //! setting, enumerate mic devices, manage Ollama formatting models (list installed + curated

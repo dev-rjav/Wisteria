@@ -1,4 +1,4 @@
-/* Wisteria — Flow App styling. Design tokens: Doto font, pure black + magenta ("night garden"). */
+/* Wisteria — app styling. Design tokens: Doto font, pure black + magenta ("night garden"). */
 :root {
   --magenta: #e879f9;
   --magenta-light: #f5d0fe;

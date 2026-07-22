@@ -1,4 +1,4 @@
-// Wisteria Flow App — frontend logic. Wires every visible control to the Rust backend via Tauri.
+// Wisteria — frontend logic. Wires every visible control to the Rust backend via Tauri.
 'use strict';
 
 /* ---------- Tauri bridge (with a no-op fallback so the page can open in a plain browser) ---------- */

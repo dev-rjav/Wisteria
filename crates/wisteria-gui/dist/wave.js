@@ -1,4 +1,4 @@
-// Flow Bar wave engine — magenta sine × cos strands, ported from the Flow App design.
+// Dock wave engine — magenta sine × cos strands.
 // Exposes window.WisteriaWave with setMode(mode) where mode is idle|listening|processing.
 (function () {
   const canvas = document.getElementById('dock-canvas');

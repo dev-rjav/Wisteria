@@ -1,6 +1,6 @@
 [package]
 name = "wisteria-gui"
-description = "Wisteria desktop app (Tauri v2) — the Flow App workspace UI over the dictation engine."
+description = "Wisteria desktop app (Tauri v2) — the workspace UI over the dictation engine."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
