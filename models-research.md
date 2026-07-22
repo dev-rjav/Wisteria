@@ -37,7 +37,7 @@
 
 Model-pluggable from day one (a `ModelBackend` trait), with these defaults:
 
-1. **Default (English/European, realtime feel)** → **Parakeet TDT 0.6B v3** via sherpa-onnx/transcribe-rs. Transcribes a sentence in tens of milliseconds; this is how we hit Wispr-like latency locally.
+1. **Default (English/European, realtime feel)** → **Parakeet TDT 0.6B v3** via sherpa-onnx/transcribe-rs. Transcribes a sentence in tens of milliseconds; this is how we hit instant, cloud-app-like latency locally.
 2. **Multilingual mode** → **Whisper large-v3-turbo** via whisper.cpp (99 languages, MIT).
 3. **Low-end hardware mode** → **Moonshine base** (tiny, streaming, CPU-only fine).
 4. **Max-accuracy mode (non-realtime, e.g. voice notes)** → **Granite Speech 4.1 2B** or Canary.
@@ -71,8 +71,8 @@ prompt short.
 - **Low-end tier**: **Qwen3-0.6B** or **Gemma 3 1B**.
 - **Later**: fine-tune **Gemma 3 270M** (or Qwen3-0.6B) on speech-cleanup pairs — a dedicated
   ~200 MB formatter model would beat generic models at this one job and run in <50 ms. This is
-  our equivalent of Wispr's proprietary "token-level formatting control".
-- Keep the cleanup prompt to a few lines (Wispr's is conceptually just: *"Remove filler words,
+  our equivalent of the proprietary "token-level formatting control" in commercial apps.
+- Keep the cleanup prompt to a few lines (conceptually just: *"Remove filler words,
   fix punctuation and capitalisation, keep the meaning"*) + inject: target-app type, user
   dictionary words, and the 3 cleanup intensity levels (Light/Medium/High).
 - **BYOK escape hatch**: optional user-supplied API key (Groq/OpenAI/Anthropic/Gemini) for people
@@ -89,7 +89,7 @@ hotkey ▶ mic (16 kHz mono, warm) ▶ Silero VAD gate ▶ Parakeet/Whisper (str
 
 Total local latency budget on a mid-range machine: VAD ~0 ms + ASR 50–300 ms + LLM 100–250 ms +
 paste ~50 ms → **subjectively instant, no cloud, no audio ever leaving the device** — our core
-differentiator vs Wispr Flow.
+differentiator vs cloud dictation apps.
 
 ---
 
