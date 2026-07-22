@@ -133,8 +133,10 @@ Wisteria/
 | `paste` | Deliver text without losing the user's clipboard |
 | `engine` | Own the recorder, ASR, and formatter on worker threads; hot-reload on config change |
 
-Config lives at `%LOCALAPPDATA%/wisteria/config.toml` (Windows), `~/.config/wisteria/config.toml`
-(Linux), or `~/Library/Application Support/wisteria/config.toml` (macOS). Model weights are
+Config lives at `%LOCALAPPDATA%/WisteriaData/config.toml` (Windows),
+`~/.local/share/WisteriaData/config.toml` (Linux), or
+`~/Library/Application Support/WisteriaData/config.toml` (macOS) — a folder kept separate from the
+installed program files so uninstalling or updating never touches your settings/history. Model weights are
 downloaded on first run and are **never** committed.
 
 ---

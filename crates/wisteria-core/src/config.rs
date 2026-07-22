@@ -1,6 +1,7 @@
 //! User configuration, persisted as `config.toml` in the platform app-data directory
-//! (`%LOCALAPPDATA%/wisteria` on Windows, `~/.config/wisteria` on Linux,
-//! `~/Library/Application Support/wisteria` on macOS).
+//! (`%LOCALAPPDATA%/WisteriaData` on Windows, `~/.local/share/WisteriaData` on Linux,
+//! `~/Library/Application Support/WisteriaData` on macOS). See [`Config::app_data_dir`] for why the
+//! folder is intentionally separate from the installer's program-files directory.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -146,14 +147,50 @@ impl Default for Config {
     }
 }
 
+/// One-time, best-effort migration of user data out of the legacy `wisteria` folder (which, on
+/// Windows, collided case-insensitively with the installer's program-files dir) into the current
+/// data dir. Runs only when the new dir has no `config.toml` yet and the legacy dir does; it never
+/// overwrites existing data, and any failure is ignored (the app falls back to defaults and
+/// re-downloads models on first run).
+fn migrate_legacy_data(root: &Path, new_dir: &Path) {
+    let legacy = root.join("wisteria");
+    if legacy.as_path() == new_dir {
+        return;
+    }
+    if new_dir.join("config.toml").exists() || !legacy.join("config.toml").exists() {
+        return;
+    }
+    for name in ["config.toml", "history.json", "gui-state.json"] {
+        let src = legacy.join(name);
+        if src.exists() {
+            let _ = fs::copy(&src, new_dir.join(name));
+        }
+    }
+    // Models are large; a rename within the same volume is instant. If it fails (cross-device or
+    // in use), the model simply re-downloads on first run.
+    let (src_models, dst_models) = (legacy.join("models"), new_dir.join("models"));
+    if src_models.is_dir() && !dst_models.exists() {
+        let _ = fs::rename(&src_models, &dst_models);
+    }
+}
+
 impl Config {
-    /// The Wisteria app-data directory, creating it if needed.
+    /// The Wisteria app-data directory (settings, history, downloaded models), creating it if
+    /// needed. Windows: `%LOCALAPPDATA%/WisteriaData`, Linux: `~/.local/share/WisteriaData`,
+    /// macOS: `~/Library/Application Support/WisteriaData`.
+    ///
+    /// The folder name is deliberately **not** `wisteria`: on Windows the installer places the app
+    /// under `%LOCALAPPDATA%/Wisteria`, and because the filesystem is case-insensitive a data dir
+    /// named `wisteria` resolves to the *same folder* as the install dir — so uninstalling the app
+    /// would delete the user's history, and updates couldn't cleanly replace program files. Keeping
+    /// data in a separate, non-colliding folder means uninstall/update never touches user data.
     pub fn app_data_dir() -> Result<PathBuf> {
-        let dir = dirs::data_local_dir()
-            .context("could not resolve a local data directory for this platform")?
-            .join("wisteria");
+        let root = dirs::data_local_dir()
+            .context("could not resolve a local data directory for this platform")?;
+        let dir = root.join("WisteriaData");
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating app data dir {}", dir.display()))?;
+        migrate_legacy_data(&root, &dir);
         Ok(dir)
     }
 
