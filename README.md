@@ -20,9 +20,19 @@ Just download and run it — no extra steps, no build tools required. The instal
 adds the WebView2 runtime if needed, and offers to install the optional local formatter (Ollama).
 On first launch, Wisteria downloads its speech-to-text model automatically.
 
+**Linux (x86_64) — one command:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dev-rjav/Wisteria/main/install.sh | bash
+```
+
+This downloads the prebuilt **AppImage** (one portable file that runs on virtually any distro),
+installs it to `~/.local/bin`, adds an application-menu launcher, and offers to set up Ollama. No
+compiling, no root required. Uninstall with the same command plus `-s -- --uninstall`. You can also
+grab the `.AppImage` or `.deb` directly from the Releases page.
+
 Prefer to browse versions and release notes? See the
-[Releases page](https://github.com/dev-rjav/Wisteria/releases). macOS and Linux builds are on the
-roadmap.
+[Releases page](https://github.com/dev-rjav/Wisteria/releases). A macOS build is on the roadmap.
 
 ---
 

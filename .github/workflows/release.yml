@@ -1,0 +1,78 @@
+name: Release
+
+# Builds prebuilt installers for every platform and attaches them to the GitHub Release for a
+# pushed version tag (e.g. `v0.1.1`). Also runnable manually (workflow_dispatch) to smoke-test the
+# builds without publishing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            bundles: 'deb,appimage'
+          - os: windows-latest
+            bundles: 'nsis'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libasound2-dev libxdo-dev libxtst-dev libxi-dev file
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Build bundles
+        working-directory: crates/wisteria-gui
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Stage assets with stable names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          shopt -s nullglob
+          for f in target/release/bundle/appimage/*.AppImage; do cp -v "$f" "dist/Wisteria-x86_64.AppImage"; done
+          for f in target/release/bundle/deb/*.deb;          do cp -v "$f" "dist/Wisteria-amd64.deb"; done
+          for f in target/release/bundle/nsis/*-setup.exe;   do cp -v "$f" "dist/Wisteria-Setup-Windows-x64.exe"; done
+          echo "Staged:"; ls -la dist
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisteria-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
