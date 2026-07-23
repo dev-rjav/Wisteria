@@ -315,6 +315,17 @@ fn worker_loop(
                 }
                 Ok(Cmd::Reload(new)) => {
                     let new = *new;
+                    // Memory efficiency: if we were using a local Ollama model and we're no longer
+                    // using that exact one (switched to a cloud provider, changed the model, or
+                    // turned the LLM off), tell Ollama to unload it so it frees RAM/VRAM instead of
+                    // keeping it resident until keep-alive expires.
+                    let old_ollama = config.active_ollama_model().map(|(u, m)| (u.to_string(), m.to_string()));
+                    let new_ollama = new.active_ollama_model().map(|(u, m)| (u.to_string(), m.to_string()));
+                    if let Some((old_url, old_model)) = &old_ollama {
+                        if new_ollama.as_ref() != Some(&(old_url.clone(), old_model.clone())) {
+                            crate::format::unload_ollama(old_url, old_model);
+                        }
+                    }
                     let rebuild_audio = new.input_device != config.input_device;
                     let rebuild_asr = new.model != config.model || new.language != config.language;
                     let rebuild_fmt = new.format != config.format

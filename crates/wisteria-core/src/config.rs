@@ -237,6 +237,18 @@ impl Config {
         self.api_providers.iter().find(|p| p.id == id)
     }
 
+    /// The local Ollama model the pipeline is actively using, as `(url, model)`, or `None`.
+    /// Returns `None` when a cloud provider is selected (Ollama is untouched) or when neither the
+    /// formatter nor Ask AI needs an LLM (`format = off` and Ask AI disabled). Used to decide when
+    /// to unload a model from Ollama for memory efficiency on a settings change.
+    pub fn active_ollama_model(&self) -> Option<(&str, &str)> {
+        let uses_llm = self.format != FormatLevel::Off || self.ask_ai_enabled;
+        if !uses_llm || self.active_provider().is_some() {
+            return None;
+        }
+        Some((self.formatter_url.as_str(), self.formatter_model.as_str()))
+    }
+
     /// Default config file path (`<app-data>/config.toml`).
     pub fn default_path() -> Result<PathBuf> {
         Ok(Self::app_data_dir()?.join("config.toml"))
@@ -321,6 +333,27 @@ mod tests {
         // A dangling id (provider removed) falls back to local.
         cfg.formatter_backend = "p-gone".into();
         assert!(cfg.active_provider().is_none());
+    }
+
+    #[test]
+    fn active_ollama_model_reflects_backend_and_llm_use() {
+        let mut cfg = Config::default(); // format=Medium, local backend
+        assert_eq!(cfg.active_ollama_model(), Some(("http://127.0.0.1:11434", "qwen3:1.7b")));
+        // Off + Ask AI off => nothing loaded.
+        cfg.format = FormatLevel::Off;
+        assert_eq!(cfg.active_ollama_model(), None);
+        // Off but Ask AI on still uses the local model.
+        cfg.ask_ai_enabled = true;
+        assert!(cfg.active_ollama_model().is_some());
+        // Selecting a cloud provider => Ollama untouched.
+        cfg.format = FormatLevel::Medium;
+        cfg.api_providers.push(ApiProvider {
+            id: "p-1".into(), name: "OpenRouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(), api_key: "k".into(),
+            model: "openai/gpt-4o-mini".into(),
+        });
+        cfg.formatter_backend = "p-1".into();
+        assert_eq!(cfg.active_ollama_model(), None);
     }
 
     #[test]

@@ -92,7 +92,9 @@ and the raw transcript is pasted directly.
 - **BYOK cloud formatter** (optional) — link an OpenAI-compatible API service (OpenRouter, OpenAI,
   Groq, …) in Settings and use a hosted model for cleanup / Ask AI instead of local Ollama. Add,
   edit, and remove services and fetch their model lists from the app. Local stays the default; your
-  key lives only in your local config.
+  key lives only in your local config. For the lowest latency, pick a small, fast, **non-reasoning**
+  model (e.g. `gpt-4o-mini`, or Groq's `llama-3.1-8b-instant`) — Wisteria keeps the HTTPS connection
+  warm between dictations and, on OpenRouter, routes to the highest-throughput backend automatically.
 - **History** window with per-entry copy and real day grouping.
 - **The Dock** — a small, frameless, always-on-top overlay at the bottom of the screen that renders
   a flowing lavender **wave** with your voice (idle → listening → processing → done).

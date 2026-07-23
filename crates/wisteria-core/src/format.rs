@@ -302,10 +302,19 @@ impl Backend {
         }
     }
 
-    /// Preload the model (Ollama only; cloud services need no warm-up).
-    fn warm(&self) {
-        if let Backend::Ollama { url, model } = self {
-            warm_up(url, model);
+    /// Warm the backend so the first dictation is fast. Ollama: preload the model. Cloud: pre-open
+    /// the TLS/HTTP connection on `client`'s shared pool (a cloned blocking client shares the pool),
+    /// so the first real request skips the TLS handshake — the biggest avoidable cloud latency.
+    /// Non-blocking and best-effort.
+    fn warm(&self, client: &reqwest::blocking::Client) {
+        match self {
+            Backend::Ollama { url, model } => warm_up(url, model),
+            Backend::OpenAi { base, key, .. } => {
+                let (client, base, key) = (client.clone(), base.clone(), key.clone());
+                std::thread::spawn(move || {
+                    let _ = client.get(format!("{base}/models")).bearer_auth(&key).send();
+                });
+            }
         }
     }
 
@@ -339,6 +348,14 @@ impl Backend {
                 Ok(resp.message.content)
             }
             Backend::OpenAi { base, key, model } => {
+                // On OpenRouter, ask it to route to the highest-throughput backend for the model — a
+                // safe, provider-normalized latency win. Only sent to OpenRouter (other
+                // OpenAI-compatible services would reject an unknown field), so it never breaks them.
+                let provider = if base.contains("openrouter.ai") {
+                    Some(ProviderPrefs { sort: "throughput" })
+                } else {
+                    None
+                };
                 let body = OpenAiRequest {
                     model,
                     stream: false,
@@ -347,6 +364,7 @@ impl Backend {
                         ChatMessage { role: "system", content: system },
                         ChatMessage { role: "user", content: user },
                     ],
+                    provider,
                 };
                 let resp: OpenAiResponse = client
                     .post(format!("{base}/chat/completions"))
@@ -392,15 +410,12 @@ impl Formatter {
         }
         let backend = Backend::from_config(config);
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_millis(config.formatter_timeout_ms))
-            .build()
-            .ok()?;
+        let client = http_client(Duration::from_millis(config.formatter_timeout_ms))?;
 
         if backend.available(&client) {
-            // Preload the model so the first real dictation isn't slow enough to time out
-            // (cold-start of a 1–2 GB local model can exceed the per-request timeout).
-            backend.warm();
+            // Warm the backend so the first real dictation is fast: preload a local model, or
+            // pre-open the cloud connection so the first request skips the TLS handshake.
+            backend.warm(&client);
             info!(model = %backend.model(), level = ?config.format, "formatter ready");
             Some(Formatter {
                 client,
@@ -514,12 +529,9 @@ impl AskAi {
         let backend = Backend::from_config(config);
         // Generation can take longer than cleanup, so use a generous timeout.
         let timeout = config.formatter_timeout_ms.max(60_000);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_millis(timeout))
-            .build()
-            .ok()?;
+        let client = http_client(Duration::from_millis(timeout))?;
         if backend.available(&client) {
-            backend.warm();
+            backend.warm(&client);
             info!(model = %backend.model(), keyword = ?keyword, "Ask AI ready");
             Some(AskAi { client, backend, keyword })
         } else {
@@ -599,6 +611,45 @@ fn strip_generated_wrapper(text: &str) -> String {
         }
     }
     t.to_string()
+}
+
+/// Build a blocking HTTP client with the given per-request timeout, tuned to **keep the connection
+/// warm between dictations**: a long idle-pool timeout and TCP keep-alive mean a cloud formatter
+/// reuses the same TLS connection across dictations instead of re-handshaking every time (which is
+/// a big chunk of per-request latency). Cloning this client shares the same pool.
+fn http_client(timeout: Duration) -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .pool_idle_timeout(Duration::from_secs(120))
+        .pool_max_idle_per_host(4)
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()
+        .ok()
+}
+
+/// Ask Ollama to **unload** `model` from memory immediately (best-effort, non-blocking). Called
+/// when the formatter stops using a local model — the user switched the backend to a cloud provider
+/// (OpenAI / OpenRouter / …), changed the Ollama model, or turned the LLM stage off — so Ollama
+/// frees the RAM/VRAM right away instead of keeping the old model resident until its keep-alive
+/// timer expires. `keep_alive: 0` tells Ollama to evict the model as soon as the request returns.
+pub fn unload_ollama(url: &str, model: &str) {
+    if url.trim().is_empty() || model.trim().is_empty() {
+        return;
+    }
+    let url = url.trim_end_matches('/').to_string();
+    let model = model.to_string();
+    std::thread::spawn(move || {
+        if let Ok(client) = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+        {
+            let body = UnloadRequest { model: &model, keep_alive: 0 };
+            match client.post(format!("{url}/api/generate")).json(&body).send() {
+                Ok(_) => info!(model = %model, "asked Ollama to unload the model (freeing memory)"),
+                Err(e) => warn!(model = %model, %e, "Ollama unload request failed (non-fatal)"),
+            }
+        }
+    });
 }
 
 /// Preload `model` into memory via Ollama's `/api/generate` (empty prompt loads the model).
@@ -748,6 +799,13 @@ struct PreloadRequest<'a> {
     model: &'a str,
 }
 
+/// Ollama `/api/generate` body used only to evict a model (`keep_alive: 0`, no prompt).
+#[derive(Serialize)]
+struct UnloadRequest<'a> {
+    model: &'a str,
+    keep_alive: u32,
+}
+
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
@@ -785,6 +843,16 @@ struct OpenAiRequest<'a> {
     stream: bool,
     temperature: f32,
     messages: Vec<ChatMessage<'a>>,
+    /// OpenRouter-only routing preferences; omitted entirely for other services.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<ProviderPrefs>,
+}
+
+/// OpenRouter provider-routing preferences. `sort: "throughput"` picks the fastest backend for the
+/// selected model, cutting formatter latency.
+#[derive(Serialize)]
+struct ProviderPrefs {
+    sort: &'static str,
 }
 
 #[derive(Deserialize)]
