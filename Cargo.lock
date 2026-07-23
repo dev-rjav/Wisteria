@@ -6444,7 +6444,7 @@ dependencies = [
 
 [[package]]
 name = "wisteria-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "tracing",
@@ -6454,7 +6454,7 @@ dependencies = [
 
 [[package]]
 name = "wisteria-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6477,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "wisteria-gui"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
