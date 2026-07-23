@@ -408,24 +408,81 @@ fn toggle_engine(app: &AppHandle) {
     }
 }
 
-/// Position the frameless dock at the bottom-center of the primary monitor.
-fn position_dock(app: &AppHandle) {
-    if let Some(dock) = app.get_webview_window("dock") {
-        if let Ok(Some(monitor)) = dock.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size();
-            let lw = size.width as f64 / scale;
-            let lh = size.height as f64 / scale;
-            // Matches the dock's tiny idle window (see SIZES.idle in dock.js). This uses the full
-            // monitor height, so leave room for the taskbar (~48px) plus a gap; dock.js refines
-            // the position using the work area once the webview loads.
-            let (win_w, win_h) = (96.0, 34.0);
-            let x = (lw - win_w) / 2.0;
-            let y = lh - win_h - 100.0;
-            let _ = dock.set_position(tauri::LogicalPosition::new(x, y));
-        }
-        let _ = dock.set_always_on_top(true);
+/// Clearance (logical px) between the dock's bottom edge and the bottom of the monitor work area,
+/// so the pill sits *just above* the taskbar rather than touching it.
+const DOCK_BOTTOM_GAP: f64 = 14.0;
+
+/// Place the frameless dock centered horizontally and just above the taskbar, for a given logical
+/// window size. Uses the *physical work area* of whichever monitor the dock currently sits on
+/// (falling back to the primary), then sets a physical position. This is deliberately independent
+/// of the webview's `screen.avail*` values, which WebView2 reports unreliably across DPI scaling
+/// and multi-monitor setups — the root cause of the dock landing at a random spot on other
+/// machines. `work_area` already excludes the taskbar at any scale, so the same math is correct on
+/// 100%, 125%, 150%, … displays.
+fn place_dock(app: &AppHandle, width_logical: f64, height_logical: f64) {
+    let Some(dock) = app.get_webview_window("dock") else {
+        return;
+    };
+    let monitor = dock
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| dock.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let wa = monitor.work_area();
+        let pw = (width_logical * scale).round() as i32;
+        let ph = (height_logical * scale).round() as i32;
+        let gap = (DOCK_BOTTOM_GAP * scale).round() as i32;
+        let x = wa.position.x + (wa.size.width as i32 - pw) / 2;
+        let y = wa.position.y + wa.size.height as i32 - ph - gap;
+        let _ = dock.set_position(tauri::PhysicalPosition::new(x, y));
     }
+    let _ = dock.set_always_on_top(true);
+}
+
+/// Position the frameless dock at startup, sized to its tiny idle pill (see SIZES.idle in dock.js).
+fn position_dock(app: &AppHandle) {
+    place_dock(app, 96.0, 34.0);
+}
+
+/// Re-place the dock for the logical size the webview just resized itself to. Called from dock.js
+/// after every state change so the pill stays centered and taskbar-anchored as it grows/shrinks —
+/// on the correct monitor and at the correct DPI, without trusting `screen.avail*`.
+#[tauri::command]
+fn place_dock_cmd(app: AppHandle, width: f64, height: f64) {
+    place_dock(&app, width, height);
+}
+
+/// Shrink + center the main window so it always fits the current monitor's work area, even on
+/// small or high-DPI laptop screens where the 1280×820 default would overflow off-screen (which is
+/// what makes the layout look "disturbed" on other machines). We cap at ~94% of the available
+/// logical work area and re-center using physical coordinates so it's correct at any scale.
+fn fit_main_window(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let monitor = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let wa = monitor.work_area();
+    let avail_w = wa.size.width as f64 / scale;
+    let avail_h = wa.size.height as f64 / scale;
+    // Preferred default, but never larger than the work area (with a small margin).
+    let w = 1280.0_f64.min(avail_w * 0.94);
+    let h = 820.0_f64.min(avail_h * 0.94);
+    let _ = win.set_size(tauri::LogicalSize::new(w, h));
+    let pw = (w * scale).round() as i32;
+    let ph = (h * scale).round() as i32;
+    let x = wa.position.x + (wa.size.width as i32 - pw) / 2;
+    let y = wa.position.y + (wa.size.height as i32 - ph) / 2;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 /// Build the system-tray icon + menu so Wisteria keeps running in the background.
@@ -489,6 +546,7 @@ fn main() {
             let handle = app.handle().clone();
             setup_tray(&handle)?;
             position_dock(&handle);
+            fit_main_window(&handle);
             let data_dir = Config::app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
             let config_path = data_dir.join("config.toml");
             let gui_state_path = data_dir.join("gui-state.json");
@@ -543,6 +601,7 @@ fn main() {
             export_dictionary,
             import_dictionary,
             submit_report,
+            place_dock_cmd,
             list_input_devices,
             list_formatter_models,
             list_transcription_models,

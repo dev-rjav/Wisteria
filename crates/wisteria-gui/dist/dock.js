@@ -7,7 +7,7 @@ const TAURI = window.__TAURI__;
 const invoke = TAURI ? TAURI.core.invoke : async () => null;
 const listen = TAURI ? TAURI.event.listen : async () => () => {};
 const win = TAURI ? TAURI.window.getCurrentWindow() : null;
-const { LogicalSize, LogicalPosition } = (TAURI && TAURI.window) || {};
+const { LogicalSize } = (TAURI && TAURI.window) || {};
 
 const $ = (id) => document.getElementById(id);
 
@@ -54,14 +54,13 @@ async function layout() {
   laying = true;
   lastW = w; lastH = h;
   try {
-    // Bottom-anchored: keep the bottom edge fixed so the pill grows upward, never jumping under
+    // Resize to hug the pill, then let Rust place it: centered + just above the taskbar, using the
+    // monitor's real work area (correct across DPI scaling and multi-monitor). We deliberately do
+    // NOT use screen.avail* here — WebView2 reports those unreliably, which landed the dock at a
+    // random spot on other machines. Bottom-anchored so the pill grows upward, never jumping under
     // the cursor (which would bounce hover state).
-    // Sit well clear of the taskbar. screen.availHeight already excludes it, but a small gap
-    // still overlapped, so keep a comfortable margin above the work-area bottom.
-    const x = Math.round((screen.availWidth - w) / 2);
-    const y = Math.round(screen.availHeight - h - 52);
     await win.setSize(new LogicalSize(w, h));
-    await win.setPosition(new LogicalPosition(x, y));
+    await invoke('place_dock_cmd', { width: w, height: h });
   } catch (e) { lastW = 0; lastH = 0; /* force retry next time */ }
   finally { laying = false; }
 }
