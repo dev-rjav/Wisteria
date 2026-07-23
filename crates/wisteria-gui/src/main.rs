@@ -112,15 +112,19 @@ struct ReportForm {
     steps: String,
 }
 
-/// Ship a tester's issue report to the configured HTTPS ingestion endpoint (Apps Script → Google
-/// Sheet). The URL is baked in at build time from the `WISTERIA_REPORT_URI` env var (gitignored,
-/// never committed); if it wasn't set, reporting is disabled and this returns an explanatory error.
+/// The issue-report ingestion endpoint: a Google Apps Script web app (`doPost`) that appends each
+/// report as a row in a Google Sheet. It's a public client endpoint (it ships inside every binary
+/// anyway and the deployment is set to "Anyone"), so it's baked in directly rather than treated as
+/// a build secret — that's what makes reporting work in the distributed builds. A build can still
+/// override it via the `WISTERIA_REPORT_URI` env var (e.g. to point at a staging sheet).
+const DEFAULT_REPORT_URI: &str = "https://script.google.com/macros/s/AKfycbwz-ur0mPb-tZ154p6z4Wms547FySbL8RwUCxIIy05FAMv8ejnuxZtKkoo4G4OjXgYF/exec";
+
+/// Ship a tester's issue report to the Apps Script → Google Sheet endpoint as JSON (the script
+/// reads `JSON.parse(e.postData.contents)` and the keys below map 1:1 to its columns).
 #[tauri::command]
 fn submit_report(report: ReportForm) -> Result<(), String> {
-    let endpoint = option_env!("WISTERIA_REPORT_URI").unwrap_or("").trim();
-    if endpoint.is_empty() {
-        return Err("Issue reporting isn't configured in this build yet.".into());
-    }
+    let baked = option_env!("WISTERIA_REPORT_URI").unwrap_or("").trim();
+    let endpoint = if baked.is_empty() { DEFAULT_REPORT_URI } else { baked };
     if report.name.trim().is_empty()
         || report.title.trim().is_empty()
         || report.description.trim().is_empty()
