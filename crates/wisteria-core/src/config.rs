@@ -69,6 +69,29 @@ impl Default for Transforms {
     }
 }
 
+/// A user-configured cloud formatter service, reached over the **OpenAI-compatible** Chat
+/// Completions protocol (`POST {base_url}/chat/completions` with a `Bearer` key). This is the
+/// universal denominator supported by OpenRouter, OpenAI, Groq, Together, DeepInfra, LM Studio,
+/// and Ollama's own `/v1` endpoint — so "any other service" that speaks it can be linked as a
+/// formatter backend. BYOK and always optional: local Ollama stays the default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiProvider {
+    /// Stable identifier (used by [`Config::formatter_backend`] to select this provider). Generated
+    /// by the GUI when the provider is added; never shown to the user.
+    pub id: String,
+    /// Human-readable label shown in Settings (e.g. "OpenRouter", "My Groq key").
+    pub name: String,
+    /// OpenAI-compatible base URL, without a trailing `/chat/completions`
+    /// (e.g. `https://openrouter.ai/api/v1`).
+    pub base_url: String,
+    /// Secret API key sent as `Authorization: Bearer <key>`. Stored in `config.toml` (local-only).
+    #[serde(default)]
+    pub api_key: String,
+    /// The model id selected for this provider (e.g. `openai/gpt-4o-mini`). Provider-specific.
+    #[serde(default)]
+    pub model: String,
+}
+
 /// A voice text-expansion snippet: say the keyword + `trigger` (e.g. "insert address") and the
 /// `expansion` is pasted verbatim in its place. Triggered only when the spoken words after the
 /// keyword match a `trigger`; otherwise the text is left untouched.
@@ -100,6 +123,14 @@ pub struct Config {
     pub formatter_url: String,
     /// Ollama model tag used to clean transcripts (e.g. `"qwen3:0.6b"`).
     pub formatter_model: String,
+    /// Which formatter backend is active. Empty or `"local"` = the local Ollama server above;
+    /// otherwise the [`ApiProvider::id`] of one of [`Config::api_providers`] (a BYOK cloud service).
+    #[serde(default)]
+    pub formatter_backend: String,
+    /// User-configured OpenAI-compatible cloud formatter services (BYOK). Empty by default —
+    /// local-first is preserved; a cloud provider is only ever used when explicitly selected.
+    #[serde(default)]
+    pub api_providers: Vec<ApiProvider>,
     /// Max time (ms) to wait for the formatter before falling back to the raw transcript.
     pub formatter_timeout_ms: u64,
     /// Custom formatter system prompt. Empty = use the built-in default
@@ -134,6 +165,8 @@ impl Default for Config {
             format: FormatLevel::Medium,
             formatter_url: "http://127.0.0.1:11434".to_string(),
             formatter_model: "qwen3:1.7b".to_string(),
+            formatter_backend: String::new(),
+            api_providers: Vec::new(),
             formatter_timeout_ms: 20000,
             formatter_prompt: String::new(),
             transforms: Transforms::default(),
@@ -192,6 +225,16 @@ impl Config {
             .with_context(|| format!("creating app data dir {}", dir.display()))?;
         migrate_legacy_data(&root, &dir);
         Ok(dir)
+    }
+
+    /// The active cloud formatter provider, if one is selected (and still exists). Returns `None`
+    /// when the backend is local Ollama — the default — so callers fall back to the Ollama path.
+    pub fn active_provider(&self) -> Option<&ApiProvider> {
+        let id = self.formatter_backend.trim();
+        if id.is_empty() || id == "local" {
+            return None;
+        }
+        self.api_providers.iter().find(|p| p.id == id)
     }
 
     /// Default config file path (`<app-data>/config.toml`).
@@ -253,5 +296,48 @@ mod tests {
         let parsed: Config = toml::from_str(r#"model = "custom-model""#).unwrap();
         assert_eq!(parsed.model, "custom-model");
         assert_eq!(parsed.ptt_key, Config::default().ptt_key);
+        // New BYOK fields default cleanly on an old config file.
+        assert_eq!(parsed.formatter_backend, "");
+        assert!(parsed.api_providers.is_empty());
+    }
+
+    #[test]
+    fn active_provider_resolves_only_when_selected() {
+        let mut cfg = Config::default();
+        cfg.api_providers.push(ApiProvider {
+            id: "p-1".into(),
+            name: "OpenRouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            api_key: "sk-x".into(),
+            model: "openai/gpt-4o-mini".into(),
+        });
+        // Default (empty) backend = local Ollama.
+        assert!(cfg.active_provider().is_none());
+        cfg.formatter_backend = "local".into();
+        assert!(cfg.active_provider().is_none());
+        // Selecting the provider id resolves it.
+        cfg.formatter_backend = "p-1".into();
+        assert_eq!(cfg.active_provider().unwrap().model, "openai/gpt-4o-mini");
+        // A dangling id (provider removed) falls back to local.
+        cfg.formatter_backend = "p-gone".into();
+        assert!(cfg.active_provider().is_none());
+    }
+
+    #[test]
+    fn providers_round_trip_through_toml() {
+        let mut cfg = Config::default();
+        cfg.formatter_backend = "p-1".into();
+        cfg.api_providers.push(ApiProvider {
+            id: "p-1".into(),
+            name: "Groq".into(),
+            base_url: "https://api.groq.com/openai/v1".into(),
+            api_key: "gsk".into(),
+            model: "llama-3.1-8b-instant".into(),
+        });
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.formatter_backend, "p-1");
+        assert_eq!(parsed.api_providers.len(), 1);
+        assert_eq!(parsed.active_provider().unwrap().name, "Groq");
     }
 }

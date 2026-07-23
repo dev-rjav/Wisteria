@@ -200,6 +200,68 @@ fn list_formatter_models(state: State<AppState>) -> FormatterModels {
     }
 }
 
+/// The `data[].id` list from an OpenAI-compatible `GET /models` response (OpenRouter, OpenAI,
+/// Groq, …). Extra fields are ignored.
+#[derive(serde::Deserialize)]
+struct OpenAiModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiModelObj>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiModelObj {
+    id: String,
+}
+
+/// List the models a BYOK cloud provider exposes, so the user can pick one instead of typing an id.
+/// Hits `GET {base_url}/models` with the (optional) Bearer key. Doubles as a connectivity/key test:
+/// a bad URL or key surfaces here as an error string. Runs the blocking HTTP off-thread (reqwest's
+/// blocking client must not be created inside Tauri's async runtime).
+#[tauri::command]
+fn list_api_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("Enter the service's base URL first.".into());
+    }
+    let key = api_key.trim().to_string();
+    let worker = std::thread::spawn(move || -> Result<Vec<String>, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut req = client.get(format!("{base}/models"));
+        if !key.is_empty() {
+            req = req.bearer_auth(&key);
+        }
+        let resp = req
+            .send()
+            .map_err(|e| format!("could not reach the service: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "the service returned {} (check the base URL and API key)",
+                resp.status()
+            ));
+        }
+        let parsed: OpenAiModelsResponse = resp
+            .json()
+            .map_err(|e| format!("unexpected response (is this an OpenAI-compatible API?): {e}"))?;
+        let mut ids: Vec<String> = parsed
+            .data
+            .into_iter()
+            .map(|m| m.id)
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        ids.sort();
+        if ids.is_empty() {
+            return Err("connected, but the service listed no models.".into());
+        }
+        Ok(ids)
+    });
+    worker
+        .join()
+        .map_err(|_| "the request crashed".to_string())?
+}
+
 #[derive(Serialize)]
 struct TranscriptionModel {
     name: String,
@@ -606,6 +668,7 @@ fn main() {
             import_dictionary,
             submit_report,
             place_dock_cmd,
+            list_api_models,
             list_input_devices,
             list_formatter_models,
             list_transcription_models,

@@ -320,6 +320,8 @@ fn worker_loop(
                     let rebuild_fmt = new.format != config.format
                         || new.formatter_model != config.formatter_model
                         || new.formatter_url != config.formatter_url
+                        || new.formatter_backend != config.formatter_backend
+                        || new.api_providers != config.api_providers
                         || new.formatter_timeout_ms != config.formatter_timeout_ms
                         || new.formatter_prompt != config.formatter_prompt
                         || new.transforms != config.transforms
@@ -333,6 +335,8 @@ fn worker_loop(
                         || new.ask_ai_keyword != config.ask_ai_keyword
                         || new.formatter_model != config.formatter_model
                         || new.formatter_url != config.formatter_url
+                        || new.formatter_backend != config.formatter_backend
+                        || new.api_providers != config.api_providers
                         || new.formatter_timeout_ms != config.formatter_timeout_ms;
                     if rebuild_audio {
                         pipe.recorder = match Recorder::new(&new.input_device) {

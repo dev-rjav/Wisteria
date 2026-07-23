@@ -257,11 +257,119 @@ pub fn effective_system_prompt(config: &Config) -> String {
     assemble_system(&base, config.format, &config.transforms)
 }
 
-/// A configured, reachable transcript formatter backed by an Ollama model.
+/// Where chat requests go: the local Ollama server, or an OpenAI-compatible cloud service (BYOK).
+/// Resolved from [`Config`] by [`Backend::from_config`] and used by both [`Formatter`] and
+/// [`AskAi`] so they behave identically regardless of the backend the user picked.
+enum Backend {
+    /// Local Ollama, using its native `/api/chat` (+ `/api/tags`, `/api/generate` warm-up).
+    Ollama { url: String, model: String },
+    /// Any OpenAI-compatible service (OpenRouter, OpenAI, Groq, …): `POST {base}/chat/completions`
+    /// with `Authorization: Bearer <key>`.
+    OpenAi { base: String, key: String, model: String },
+}
+
+impl Backend {
+    /// Pick the backend from config: the selected cloud provider if one is active, else local Ollama.
+    fn from_config(config: &Config) -> Backend {
+        if let Some(p) = config.active_provider() {
+            Backend::OpenAi {
+                base: p.base_url.trim_end_matches('/').to_string(),
+                key: p.api_key.clone(),
+                model: p.model.clone(),
+            }
+        } else {
+            Backend::Ollama {
+                url: config.formatter_url.trim_end_matches('/').to_string(),
+                model: config.formatter_model.clone(),
+            }
+        }
+    }
+
+    /// The model id in use (for logging).
+    fn model(&self) -> &str {
+        match self {
+            Backend::Ollama { model, .. } | Backend::OpenAi { model, .. } => model,
+        }
+    }
+
+    /// Is the backend usable? For Ollama we verify the model is actually installed; for a cloud
+    /// service we trust the config (a bad key/model surfaces as a request error, which safely falls
+    /// back to the raw transcript) — but require a non-empty model and key so we don't send junk.
+    fn available(&self, client: &reqwest::blocking::Client) -> bool {
+        match self {
+            Backend::Ollama { url, model } => model_available(client, url, model).unwrap_or(false),
+            Backend::OpenAi { model, key, .. } => !model.trim().is_empty() && !key.trim().is_empty(),
+        }
+    }
+
+    /// Preload the model (Ollama only; cloud services need no warm-up).
+    fn warm(&self) {
+        if let Backend::Ollama { url, model } = self {
+            warm_up(url, model);
+        }
+    }
+
+    /// Send a system+user chat turn and return the assistant text. Non-streaming.
+    fn chat(
+        &self,
+        client: &reqwest::blocking::Client,
+        system: &str,
+        user: &str,
+        temperature: f32,
+    ) -> reqwest::Result<String> {
+        match self {
+            Backend::Ollama { url, model } => {
+                let body = ChatRequest {
+                    model,
+                    stream: false,
+                    // Qwen3 is a hybrid "thinking" model; disable reasoning so we get only text.
+                    think: false,
+                    messages: vec![
+                        ChatMessage { role: "system", content: system },
+                        ChatMessage { role: "user", content: user },
+                    ],
+                    options: ChatOptions { temperature },
+                };
+                let resp: ChatResponse = client
+                    .post(format!("{url}/api/chat"))
+                    .json(&body)
+                    .send()?
+                    .error_for_status()?
+                    .json()?;
+                Ok(resp.message.content)
+            }
+            Backend::OpenAi { base, key, model } => {
+                let body = OpenAiRequest {
+                    model,
+                    stream: false,
+                    temperature,
+                    messages: vec![
+                        ChatMessage { role: "system", content: system },
+                        ChatMessage { role: "user", content: user },
+                    ],
+                };
+                let resp: OpenAiResponse = client
+                    .post(format!("{base}/chat/completions"))
+                    .bearer_auth(key)
+                    .json(&body)
+                    .send()?
+                    .error_for_status()?
+                    .json()?;
+                Ok(resp
+                    .choices
+                    .into_iter()
+                    .next()
+                    .map(|c| c.message.content)
+                    .unwrap_or_default())
+            }
+        }
+    }
+}
+
+/// A configured, reachable transcript formatter backed by a local or cloud LLM.
 pub struct Formatter {
     client: reqwest::blocking::Client,
-    url: String,
-    model: String,
+    backend: Backend,
     level: FormatLevel,
     /// User's custom system prompt, or empty to compose the built-in default from `transforms`.
     custom_prompt: String,
@@ -274,50 +382,41 @@ pub struct Formatter {
 }
 
 impl Formatter {
-    /// Build a formatter from config, verifying the Ollama server is reachable and the model is
-    /// available. Returns `None` (cleanup disabled) when `format = "off"` or the server/model is
-    /// unavailable — the pipeline then uses raw transcripts.
+    /// Build a formatter from config, verifying the selected backend is usable. Returns `None`
+    /// (cleanup disabled) when `format = "off"` or the backend/model is unavailable — the pipeline
+    /// then uses raw transcripts.
     pub fn new(config: &Config) -> Option<Formatter> {
         if config.format == FormatLevel::Off {
             info!("formatter disabled (format = off)");
             return None;
         }
-        let url = config.formatter_url.trim_end_matches('/').to_string();
-        let model = config.formatter_model.clone();
+        let backend = Backend::from_config(config);
 
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_millis(config.formatter_timeout_ms))
             .build()
             .ok()?;
 
-        match model_available(&client, &url, &model) {
-            Ok(true) => {
-                // Preload the model so the first real dictation isn't slow enough to time out
-                // (cold-start of a 1–2 GB model can exceed the per-request timeout).
-                warm_up(&url, &model);
-                info!(url = %url, model = %model, level = ?config.format, "formatter ready");
-                Some(Formatter {
-                    client,
-                    url,
-                    model,
-                    level: config.format,
-                    custom_prompt: config.formatter_prompt.clone(),
-                    transforms: config.transforms,
-                    style: config.style,
-                    dictionary: config.dictionary.clone(),
-                })
-            }
-            Ok(false) => {
-                warn!(
-                    model = %model,
-                    "formatter model not found in Ollama; cleanup disabled (run `ollama pull {model}`)"
-                );
-                None
-            }
-            Err(e) => {
-                warn!(url = %url, %e, "Ollama unreachable; transcript cleanup disabled");
-                None
-            }
+        if backend.available(&client) {
+            // Preload the model so the first real dictation isn't slow enough to time out
+            // (cold-start of a 1–2 GB local model can exceed the per-request timeout).
+            backend.warm();
+            info!(model = %backend.model(), level = ?config.format, "formatter ready");
+            Some(Formatter {
+                client,
+                backend,
+                level: config.format,
+                custom_prompt: config.formatter_prompt.clone(),
+                transforms: config.transforms,
+                style: config.style,
+                dictionary: config.dictionary.clone(),
+            })
+        } else {
+            warn!(
+                model = %backend.model(),
+                "formatter backend/model unavailable; cleanup disabled (falling back to raw transcripts)"
+            );
+            None
         }
     }
 
@@ -365,30 +464,12 @@ impl Formatter {
         }
     }
 
-    /// Issue the `/api/chat` request and return the assistant message content.
+    /// Issue the chat request and return the assistant message content.
     fn request(&self, raw: &str) -> reqwest::Result<String> {
         let system = assemble_system(&self.base_prompt(), self.level, &self.transforms);
         // Wrap the transcript in delimiters so the model can never mistake it for instructions.
         let user = format!("<transcript>\n{raw}\n</transcript>");
-        let body = ChatRequest {
-            model: &self.model,
-            stream: false,
-            // Qwen3 is a hybrid "thinking" model; disable reasoning so we get only the transcript.
-            think: false,
-            messages: vec![
-                ChatMessage { role: "system", content: &system },
-                ChatMessage { role: "user", content: &user },
-            ],
-            options: ChatOptions { temperature: 0.2 },
-        };
-        let resp: ChatResponse = self
-            .client
-            .post(format!("{}/api/chat", self.url))
-            .json(&body)
-            .send()?
-            .error_for_status()?
-            .json()?;
-        Ok(resp.message.content)
+        self.backend.chat(&self.client, &system, &user, 0.2)
     }
 }
 
@@ -410,14 +491,13 @@ Return only the final text, nothing more."#;
 /// output quality depends entirely on that model.
 pub struct AskAi {
     client: reqwest::blocking::Client,
-    url: String,
-    model: String,
+    backend: Backend,
     /// Normalized keyword tokens the dictation must open with to trigger a request.
     keyword: Vec<String>,
 }
 
 impl AskAi {
-    /// Build if `ask_ai_enabled` and the model is reachable; otherwise `None` (mode inactive).
+    /// Build if `ask_ai_enabled` and the backend is reachable; otherwise `None` (mode inactive).
     pub fn new(config: &Config) -> Option<AskAi> {
         if !config.ask_ai_enabled {
             return None;
@@ -431,24 +511,20 @@ impl AskAi {
         if keyword.is_empty() {
             return None;
         }
-        let url = config.formatter_url.trim_end_matches('/').to_string();
-        let model = config.formatter_model.clone();
+        let backend = Backend::from_config(config);
         // Generation can take longer than cleanup, so use a generous timeout.
         let timeout = config.formatter_timeout_ms.max(60_000);
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_millis(timeout))
             .build()
             .ok()?;
-        match model_available(&client, &url, &model) {
-            Ok(true) => {
-                warm_up(&url, &model);
-                info!(model = %model, keyword = ?keyword, "Ask AI ready");
-                Some(AskAi { client, url, model, keyword })
-            }
-            _ => {
-                warn!(model = %model, "Ask AI enabled but model/Ollama unavailable; mode inactive");
-                None
-            }
+        if backend.available(&client) {
+            backend.warm();
+            info!(model = %backend.model(), keyword = ?keyword, "Ask AI ready");
+            Some(AskAi { client, backend, keyword })
+        } else {
+            warn!(model = %backend.model(), "Ask AI enabled but backend/model unavailable; mode inactive");
+            None
         }
     }
 
@@ -479,27 +555,11 @@ impl AskAi {
 
     /// Generate a reply to `request`. Returns `None` on any failure (caller reports an error).
     pub fn generate(&self, request: &str) -> Option<String> {
-        let body = ChatRequest {
-            model: &self.model,
-            stream: false,
-            think: false,
-            messages: vec![
-                ChatMessage { role: "system", content: ASK_AI_SYSTEM },
-                ChatMessage { role: "user", content: request },
-            ],
-            options: ChatOptions { temperature: 0.5 },
-        };
-        let resp: ChatResponse = self
-            .client
-            .post(format!("{}/api/chat", self.url))
-            .json(&body)
-            .send()
-            .ok()?
-            .error_for_status()
-            .ok()?
-            .json()
+        let content = self
+            .backend
+            .chat(&self.client, ASK_AI_SYSTEM, request, 0.5)
             .ok()?;
-        let out = strip_generated_wrapper(&strip_reasoning(&resp.message.content));
+        let out = strip_generated_wrapper(&strip_reasoning(&content));
         if out.trim().is_empty() {
             None
         } else {
@@ -716,6 +776,26 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct ChatResponseMessage {
     content: String,
+}
+
+/// OpenAI-compatible `/chat/completions` request (shared by every BYOK cloud provider).
+#[derive(Serialize)]
+struct OpenAiRequest<'a> {
+    model: &'a str,
+    stream: bool,
+    temperature: f32,
+    messages: Vec<ChatMessage<'a>>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiResponse {
+    #[serde(default)]
+    choices: Vec<OpenAiChoice>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChoice {
+    message: ChatResponseMessage,
 }
 
 #[derive(Deserialize)]

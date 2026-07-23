@@ -89,6 +89,10 @@ and the raw transcript is pasted directly.
 - **Voice snippets** — say a keyword + trigger phrase to expand verbatim text.
 - **Ask AI mode** (opt-in) — open a dictation with a keyword and the spoken request is answered by
   the local LLM and the answer is pasted instead of a transcript.
+- **BYOK cloud formatter** (optional) — link an OpenAI-compatible API service (OpenRouter, OpenAI,
+  Groq, …) in Settings and use a hosted model for cleanup / Ask AI instead of local Ollama. Add,
+  edit, and remove services and fetch their model lists from the app. Local stays the default; your
+  key lives only in your local config.
 - **History** window with per-entry copy and real day grouping.
 - **The Dock** — a small, frameless, always-on-top overlay at the bottom of the screen that renders
   a flowing lavender **wave** with your voice (idle → listening → processing → done).
@@ -229,6 +233,8 @@ Everything is editable in the GUI, and persisted to `config.toml`. Highlights:
 - `style` — writing voice (`concise` / `professional` / `casual` / `detailed`).
 - `transforms` — per-behavior toggles (all on by default).
 - `formatter_url` / `formatter_model` / `formatter_timeout` — the local Ollama endpoint + model.
+- `formatter_backend` — which backend is active: empty/`local` (Ollama) or an API service id.
+- `api_providers` — linked OpenAI-compatible cloud services (name, base URL, key, model) for BYOK.
 - `dictionary` — custom vocabulary words.
 - `snippets` + `snippet_keyword` — voice text expansions.
 - `ask_ai_enabled` + `ask_ai_keyword` — opt-in Ask AI mode.

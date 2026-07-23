@@ -30,6 +30,8 @@ const state = {
   formatterModels: { reachable: false, selected: '', models: [] },
   transcriptionModels: [],
   pulling: {},       // model -> { percent, status }
+  apiModels: {},     // provider id -> { loading, error, models: [] } (fetched from the service)
+  editingProvider: null,  // the API-service object being added/edited inline, or null
 };
 
 const NAV = [
@@ -728,10 +730,26 @@ function renderSettings() {
     </div>
 
     <div class="setting">
-      <div class="section-label">FORMATTING MODEL</div>
+      <div class="section-label">FORMATTER SOURCE</div>
+      <div id="dd-source"></div>
+    </div>
+
+    ${isLocalBackend() ? `
+    <div class="setting">
+      <div class="section-label">FORMATTING MODEL — LOCAL (OLLAMA)</div>
       ${state.formatterModels.reachable ? '' : '<div class="warn-banner">Ollama not reachable at ' + esc(c.formatter_url) + '. Start Ollama to use or download formatting models. Dictation still works with the raw transcript.</div>'}
       <div id="dd-fmt"></div>
       <div id="pull-area"></div>
+    </div>` : `
+    <div class="setting">
+      <div class="section-label">MODEL — ${esc((activeProvider() || {}).name || 'CLOUD SERVICE')}</div>
+      <div id="dd-cloud-model"></div>
+    </div>`}
+
+    <div class="setting">
+      <div class="section-label">API SERVICES (BYOK)</div>
+      <div class="page-sub" style="font-size:11px;margin:2px 0 10px">Link a cloud formatter over any OpenAI-compatible API (OpenRouter, OpenAI, Groq, …). Optional — local Ollama stays the default. Keys are stored only in your local config file.</div>
+      <div id="api-services"></div>
     </div>
 
     <div class="setting">
@@ -778,8 +796,10 @@ function renderSettings() {
 
   renderDeviceDD();
   renderTransDD();
-  renderFmtDD();
-  renderPullArea();
+  renderSourceDD();
+  if (isLocalBackend()) { renderFmtDD(); renderPullArea(); }
+  else { renderCloudModelDD(); }
+  renderApiServices();
 
   $('fmt-level').querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => { state.config.format = b.dataset.lvl; saveConfig(); renderSettings(); });
   $('f-url').onchange = () => { state.config.formatter_url = $('f-url').value.trim(); saveConfig(); };
@@ -863,6 +883,154 @@ function renderFmtDD() {
       state.config.formatter_model = o.dataset.v; state.openDD = null; saveConfig(); renderSettings();
     });
   });
+}
+
+/* ---------- API services (BYOK cloud formatter backends, OpenAI-compatible) ---------- */
+// Common services, to prefill the base URL. "Custom" leaves it blank for any other compatible API.
+const API_PRESETS = [
+  { name: 'OpenRouter', base: 'https://openrouter.ai/api/v1' },
+  { name: 'OpenAI', base: 'https://api.openai.com/v1' },
+  { name: 'Groq', base: 'https://api.groq.com/openai/v1' },
+  { name: 'Together', base: 'https://api.together.xyz/v1' },
+  { name: 'Custom / other', base: '' },
+];
+
+function providers() { return (state.config.api_providers = state.config.api_providers || []); }
+function providerById(id) { return providers().find((p) => p.id === id); }
+// Local (Ollama) is active when the backend is empty/"local" or points at a provider that's gone.
+function isLocalBackend() { const b = state.config.formatter_backend || ''; return b === '' || b === 'local' || !providerById(b); }
+function activeProvider() { return isLocalBackend() ? null : providerById(state.config.formatter_backend); }
+function newProviderId() { return 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function maskKey(k) { if (!k) return 'no key'; return k.length <= 8 ? '••••' : k.slice(0, 4) + '…' + k.slice(-4); }
+
+// Backend source selector: Local (Ollama) + each configured provider.
+function renderSourceDD() {
+  const local = { v: '', l: 'Local — Ollama' + (state.formatterModels.reachable ? '' : ' (offline)') };
+  const opts = [local].concat(providers().map((p) => ({ v: p.id, l: (p.name || 'Service') + (p.model ? ' · ' + p.model : ' · no model yet') })));
+  const cur = isLocalBackend() ? '' : state.config.formatter_backend;
+  const curOpt = opts.find((o) => o.v === cur) || local;
+  const html = opts.map((o) => `<div class="dd-opt ${o.v === cur ? 'active' : ''}" data-v="${esc(o.v)}"><div class="opt-main"><span>${esc(o.l)}</span></div></div>`).join('');
+  dropdown('dd-source', 'source', esc(curOpt.l), html, (mount) => {
+    mount.querySelectorAll('[data-v]').forEach((o) => o.onclick = () => {
+      state.config.formatter_backend = o.dataset.v; state.openDD = null; saveConfig(); renderSettings();
+    });
+  });
+}
+
+// Model picker for the active cloud provider, from the fetched list, plus Fetch + manual entry.
+function renderCloudModelDD() {
+  const p = activeProvider(); const mount = $('dd-cloud-model'); if (!mount || !p) return;
+  const cache = state.apiModels[p.id] || { models: [] };
+  const cur = p.model || '';
+  const list = (cache.models || []).slice();
+  if (cur && !list.includes(cur)) list.unshift(cur);
+  const opts = list.map((m) => `<div class="dd-opt ${m === cur ? 'active' : ''}" data-v="${esc(m)}"><div class="opt-main"><span>${esc(m)}</span></div></div>`).join('')
+    || '<div class="dd-opt">No models yet — Fetch models or type an id below</div>';
+  dropdown('dd-cloud-model', 'cloudmodel', esc(cur || 'Select a model'), opts, (m2) => {
+    m2.querySelectorAll('[data-v]').forEach((o) => o.onclick = () => { p.model = o.dataset.v; state.openDD = null; saveConfig(); renderSettings(); });
+  });
+  const extra = document.createElement('div');
+  extra.className = 'row';
+  extra.style.cssText = 'margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap';
+  extra.innerHTML = `
+    <button type="button" class="btn-rec" id="cloud-fetch" ${cache.loading ? 'disabled' : ''}>${cache.loading ? 'FETCHING…' : 'FETCH MODELS'}</button>
+    <input id="cloud-model-manual" placeholder="…or type a model id" style="flex:1;min-width:150px">
+    ${cache.error ? `<div class="warn-banner" style="flex-basis:100%">${esc(cache.error)}</div>` : ''}`;
+  mount.appendChild(extra);
+  $('cloud-fetch').onclick = () => fetchApiModels(p);
+  $('cloud-model-manual').onchange = (e) => { const v = e.target.value.trim(); if (v) { p.model = v; saveConfig(); renderSettings(); } };
+}
+
+// Fetch a provider's model list (also validates the URL/key). Errors are shown, not fatal.
+async function fetchApiModels(p) {
+  const prev = (state.apiModels[p.id] || {}).models || [];
+  state.apiModels[p.id] = { loading: true, error: null, models: prev };
+  renderSettings();
+  try {
+    const models = await invoke('list_api_models', { baseUrl: p.base_url, apiKey: p.api_key });
+    state.apiModels[p.id] = { loading: false, error: null, models: models || [] };
+  } catch (e) {
+    state.apiModels[p.id] = { loading: false, error: 'Fetch failed: ' + String(e), models: prev };
+  }
+  renderSettings();
+}
+
+// The add/remove/edit management list.
+function renderApiServices() {
+  const mount = $('api-services'); if (!mount) return;
+  const ed = state.editingProvider;
+  const list = providers().map((p) => `
+    <div class="api-card">
+      <div class="api-card-main">
+        <div class="api-name">${esc(p.name || 'Unnamed service')}</div>
+        <div class="api-meta">${esc(p.base_url || 'no URL')} · ${esc(p.model || 'no model')} · key ${esc(maskKey(p.api_key))}</div>
+      </div>
+      <div class="api-card-actions">
+        <button type="button" class="btn-mini" data-edit="${esc(p.id)}">EDIT</button>
+        <button type="button" class="btn-mini danger" data-remove="${esc(p.id)}">REMOVE</button>
+      </div>
+    </div>`).join('');
+  const form = ed ? renderProviderForm(ed) : `<button type="button" class="btn-add" id="api-add">+ ADD SERVICE</button>`;
+  mount.innerHTML = (list || '') + form;
+  mount.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => startEditProvider(b.dataset.edit));
+  mount.querySelectorAll('[data-remove]').forEach((b) => b.onclick = () => removeProvider(b.dataset.remove));
+  if ($('api-add')) $('api-add').onclick = () => startAddProvider();
+  if (ed) wireProviderForm();
+}
+
+function renderProviderForm(ed) {
+  const presetOpts = API_PRESETS.map((p) => `<option value="${esc(p.base)}" ${p.base && p.base === ed.base_url ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  return `
+    <div class="api-form">
+      <div class="api-form-title">${ed._isNew ? 'Add a service' : 'Edit service'}</div>
+      <div class="field"><label>PRESET</label><select id="ap-preset"><option value="__none">— choose to prefill —</option>${presetOpts}</select></div>
+      <div class="field"><label>NAME</label><input id="ap-name" value="${esc(ed.name || '')}" placeholder="OpenRouter"></div>
+      <div class="field"><label>BASE URL (OpenAI-compatible)</label><input id="ap-base" value="${esc(ed.base_url || '')}" placeholder="https://openrouter.ai/api/v1"></div>
+      <div class="field"><label>API KEY</label><input id="ap-key" type="password" value="${esc(ed.api_key || '')}" placeholder="sk-…"></div>
+      <div class="row" style="gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn-rec" id="ap-save">SAVE</button>
+        <button type="button" class="btn-mini" id="ap-cancel">CANCEL</button>
+      </div>
+    </div>`;
+}
+
+function wireProviderForm() {
+  const ed = state.editingProvider;
+  $('ap-name').oninput = (e) => { ed.name = e.target.value; };
+  $('ap-base').oninput = (e) => { ed.base_url = e.target.value.trim(); };
+  $('ap-key').oninput = (e) => { ed.api_key = e.target.value.trim(); };
+  $('ap-preset').onchange = (e) => {
+    const v = e.target.value; if (v === '__none') return;
+    ed.base_url = v;
+    if (!ed.name) { const pre = API_PRESETS.find((p) => p.base === v); if (pre) ed.name = pre.name; }
+    renderApiServices();
+  };
+  $('ap-save').onclick = () => saveProvider();
+  $('ap-cancel').onclick = () => { state.editingProvider = null; renderApiServices(); };
+}
+
+function startAddProvider() { state.editingProvider = { id: newProviderId(), name: '', base_url: '', api_key: '', model: '', _isNew: true }; renderApiServices(); }
+function startEditProvider(id) { const p = providerById(id); if (!p) return; state.editingProvider = Object.assign({ _isNew: false }, JSON.parse(JSON.stringify(p))); renderApiServices(); }
+
+function saveProvider() {
+  const ed = state.editingProvider; if (!ed) return;
+  if (!ed.base_url || !ed.base_url.trim()) { alert('Enter the service base URL (OpenAI-compatible).'); return; }
+  const clean = { id: ed.id, name: (ed.name || '').trim() || 'Service', base_url: ed.base_url.trim(), api_key: (ed.api_key || '').trim(), model: ed.model || '' };
+  const arr = providers();
+  const i = arr.findIndex((p) => p.id === ed.id);
+  if (i >= 0) arr[i] = clean; else arr.push(clean);
+  state.editingProvider = null;
+  saveConfig();
+  renderSettings();
+}
+
+function removeProvider(id) {
+  state.config.api_providers = providers().filter((p) => p.id !== id);
+  if (state.config.formatter_backend === id) state.config.formatter_backend = '';  // fall back to local
+  delete state.apiModels[id];
+  if (state.editingProvider && state.editingProvider.id === id) state.editingProvider = null;
+  saveConfig();
+  renderSettings();
 }
 
 function pullStatusText(p) {

@@ -247,6 +247,23 @@ select option { background: #17171a; color: var(--ink); }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
 .field label { font-size: 10px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; display: block; margin-bottom: 6px; }
 .field input { width: 100%; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .1); color: var(--ink); font-size: 13px; }
+.field select { width: 100%; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .1); color: var(--ink); font-size: 13px; }
+.field + .field { margin-top: 10px; }
+
+/* ---------- API services (BYOK) ---------- */
+.api-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; margin-top: 10px; border-radius: 11px; background: rgba(255, 255, 255, .028); border: 1px solid var(--card-border); }
+.api-card-main { min-width: 0; }
+.api-name { font-size: 13px; font-weight: 700; letter-spacing: .5px; color: var(--ink); }
+.api-meta { margin-top: 3px; font-size: 11px; color: var(--muted-2); letter-spacing: .3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-card-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.btn-mini { padding: 7px 12px; border-radius: 9px; cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: .8px; background: rgba(255, 255, 255, .06); color: var(--ink); border: 1px solid rgba(255, 255, 255, .14); }
+.btn-mini:hover { background: rgba(255, 255, 255, .1); }
+.btn-mini.danger { color: #fca5a5; border-color: rgba(248, 113, 113, .3); }
+.btn-mini.danger:hover { background: rgba(248, 113, 113, .12); }
+.btn-add { margin-top: 12px; padding: 10px 16px; border-radius: 10px; cursor: pointer; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: rgba(232, 121, 249, .1); color: var(--magenta-light); border: 1px dashed rgba(232, 121, 249, .4); }
+.btn-add:hover { background: rgba(232, 121, 249, .16); }
+.api-form { margin-top: 12px; padding: 14px; border-radius: 12px; background: rgba(232, 121, 249, .05); border: 1px solid rgba(232, 121, 249, .22); display: flex; flex-direction: column; gap: 10px; }
+.api-form-title { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--magenta-light); }
 
 .prompt-area { width: 100%; min-height: 180px; max-height: 300px; resize: vertical; margin-top: 8px; padding: 12px 14px; border-radius: 11px; background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .1); color: #d5d5da; font-size: 12px; line-height: 1.55; letter-spacing: .2px; user-select: text; white-space: pre-wrap; }
 .prompt-preview { margin: 0; max-height: 320px; overflow: auto; padding: 12px 14px; border-radius: 11px; background: rgba(0, 0, 0, .28); border: 1px solid rgba(255, 255, 255, .08); color: #c8c4d2; font-family: ui-monospace, "Cascadia Code", "Consolas", monospace; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; user-select: text; }
