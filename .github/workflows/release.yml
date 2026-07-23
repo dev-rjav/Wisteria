@@ -18,7 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          # ubuntu-24.04 (glibc 2.39): the prebuilt ONNX Runtime in `ort_sys` references glibc
+          # >=2.38 symbols (__isoc23_strtoull / __isoc23_strtol), so linking on 22.04 (glibc 2.35)
+          # fails with "undefined symbol". 24.04 provides them.
+          - os: ubuntu-24.04
             bundles: 'deb,appimage'
           - os: windows-latest
             bundles: 'nsis'
