@@ -775,6 +775,7 @@ function renderSettings() {
     <div class="modal-footer">
       <span class="v">WISTERIA v0.1 · MIT · OPEN SOURCE</span>
       <div class="footer-links">
+        <a class="os-link" id="portfolio" href="#" title="Visit rjav.in">✦ VISIT MY PORTFOLIO</a>
         <a class="os-link" id="coffee" href="#" style="border-color:#f5d000;color:#f5d000">★ STAR THE REPO</a>
         <a class="kofi-btn" id="kofi" href="#" title="Support Wisteria on Ko-fi">
           <svg class="kofi-cup" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -795,6 +796,7 @@ function renderSettings() {
     clearRecordState();                  // start each recording from a clean slate
     renderSettings();
   };
+  $('portfolio').onclick = (e) => { e.preventDefault(); openUrl('https://rjav.in'); };
   $('coffee').onclick = (e) => { e.preventDefault(); openUrl('https://github.com/dev-rjav/Wisteria'); };
   $('kofi').onclick = (e) => { e.preventDefault(); openUrl('https://ko-fi.com/C6P623L57Q'); };
 
