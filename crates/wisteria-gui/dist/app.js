@@ -22,8 +22,11 @@ const state = {
   recording: false,  // hotkey-recorder mode
   timer: { seconds: 0, handle: null },
   settingsOpen: false,
-  recordKeys: [],    // tokens captured during hotkey recording, in press order
+  recordKeys: [],    // tokens captured during hotkey recording, in press order (the peak combo)
   recordDown: null,  // Set of currently-held e.code values while recording
+  recordTimer: null, // safety timer: commit the combo if activity stops / a keyup is dropped
+  recordLastCtrlAt: 0, // ms timestamp of the last ControlLeft keydown (Windows AltGr phantom detection)
+  recordPhantomCtrl: false, // true when a captured ControlLeft is really the AltGr phantom
   scratchPasteGuard: false,   // swallow the engine's dictation paste while on the Scratchpad
   scratchPasteGuardTimer: null,
   openDD: null,
@@ -686,7 +689,7 @@ async function openSettings() {
 }
 function closeSettings() {
   state.settingsOpen = false; state.recording = false; state.openDD = null;
-  state.recordKeys = []; state.recordDown = null;
+  clearRecordState();
   $('settings-overlay').hidden = true;
   document.removeEventListener('keydown', hotkeyCapture, true);
   document.removeEventListener('keyup', hotkeyCapture, true);
@@ -716,7 +719,9 @@ function renderSettings() {
         <div class="hotkey-box" id="hotkey-box">${capsHtml}</div>
         <button class="btn-rec ${state.recording ? 'recording' : ''}" id="btn-rec">${state.recording ? 'PRESS KEYS…' : 'RECORD'}</button>
       </div>
-      <div class="page-sub" style="font-size:11px;margin-top:8px">Tip: a dedicated key like F8 is safest — modifiers get consumed globally while recording.</div>
+      ${state.recording ? '<div class="page-sub" style="font-size:11px;margin-top:8px">Hold your key or combo, then release — or press <b>Esc</b> to cancel.</div>' : ''}
+      ${!state.recording && isModifierOnly(c.ptt_key) ? '<div class="warn-banner" style="margin-top:8px">This binding is only modifier keys. While Wisteria runs they\'re consumed globally, so shortcuts like Ctrl+C, Alt+Tab or the Start menu may stop working. Pick a dedicated key instead.</div>' : ''}
+      <div class="page-sub" style="font-size:11px;margin-top:8px">Tip: a dedicated key is safest — <b>F8</b>, or on laptops where Fn keys are locked try <b>Insert</b>, <b>PrintScreen</b>, or a <b>Numpad</b> key. Bare modifiers get consumed globally.</div>
     </div>
 
     <div class="setting">
@@ -787,8 +792,7 @@ function renderSettings() {
   $('settings-overlay').onclick = (e) => { if (e.target === $('settings-overlay')) closeSettings(); };
   $('btn-rec').onclick = () => {
     state.recording = !state.recording;
-    state.recordKeys = [];               // start each recording from a clean slate
-    state.recordDown = new Set();
+    clearRecordState();                  // start each recording from a clean slate
     renderSettings();
   };
   $('coffee').onclick = (e) => { e.preventDefault(); openUrl('https://github.com/dev-rjav/Wisteria'); };
@@ -1113,23 +1117,55 @@ function onPullProgress(p) {
 }
 
 /* Map a physical key (e.code) to a token the Rust side (hotkey::parse_key) understands. Only keys
-   that can serve as a global push-to-talk binding are accepted — modifiers, function keys, and a
-   few standalone keys. Everything else (letters/digits) returns null and is ignored, since the
-   listener consumes the bound key globally and grabbing a letter would break normal typing. */
+   that can serve as a global push-to-talk binding are accepted. Everything else (letters/digits)
+   returns null and is ignored, since the listener consumes the bound key globally and grabbing a
+   letter would break normal typing.
+
+   Accepted: modifiers, F1–F12, and a set of DEDICATED keys (Insert, Delete, Home/End, PageUp/Down,
+   PrintScreen, ScrollLock, Pause, NumLock, arrows, numpad). The dedicated keys matter on laptops
+   with "Fn lock", where F1–F12 are hijacked by firmware for brightness/volume and never reach the
+   app — so a user can bind Insert/PrintScreen/etc. instead. Keep this in sync with hotkey::parse_key. */
 function codeToToken(code) {
   if (/^F([1-9]|1[0-2])$/.test(code)) return code;      // F1..F12
+  if (/^Numpad[0-9]$/.test(code)) return code;          // Numpad0..Numpad9
   return ({
     ControlLeft: 'ControlLeft', ControlRight: 'ControlRight',
     AltLeft: 'Alt', AltRight: 'AltGr',
     ShiftLeft: 'ShiftLeft', ShiftRight: 'ShiftRight',
     MetaLeft: 'Win', MetaRight: 'MetaRight',
     Space: 'Space', Tab: 'Tab', CapsLock: 'CapsLock',
+    Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End',
+    PageUp: 'PageUp', PageDown: 'PageDown',
+    PrintScreen: 'PrintScreen', ScrollLock: 'ScrollLock', Pause: 'Pause', NumLock: 'NumLock',
+    ArrowUp: 'UpArrow', ArrowDown: 'DownArrow', ArrowLeft: 'LeftArrow', ArrowRight: 'RightArrow',
+    NumpadAdd: 'NumpadAdd', NumpadSubtract: 'NumpadSubtract', NumpadMultiply: 'NumpadMultiply',
+    NumpadDivide: 'NumpadDivide', NumpadEnter: 'NumpadEnter', NumpadDecimal: 'NumpadDecimal',
   })[code] || null;
 }
 
+// Short, human labels for captured tokens (Win / Ctrl / Ins / PgUp / ↑ …).
+const KEY_LABELS = {
+  ControlLeft: 'Ctrl', ControlRight: 'Ctrl', Alt: 'Alt', AltGr: 'AltGr',
+  ShiftLeft: 'Shift', ShiftRight: 'Shift', Win: 'Win', MetaRight: 'Win',
+  Insert: 'Ins', Delete: 'Del', PageUp: 'PgUp', PageDown: 'PgDn',
+  PrintScreen: 'PrtSc', ScrollLock: 'ScrLk', NumLock: 'Num',
+  UpArrow: '↑', DownArrow: '↓', LeftArrow: '←', RightArrow: '→',
+  NumpadAdd: 'Num +', NumpadSubtract: 'Num −', NumpadMultiply: 'Num ×',
+  NumpadDivide: 'Num ÷', NumpadEnter: 'Num Enter', NumpadDecimal: 'Num .',
+};
 // Human label for a captured token (Win / Ctrl / Alt / F8 …), matching hotkeyCaps().
 function displayKey(tok) {
+  if (KEY_LABELS[tok]) return KEY_LABELS[tok];
+  if (/^Numpad[0-9]$/.test(tok)) return 'Num ' + tok.slice(6);
   return tok.replace(/^Meta.*/i, 'Win').replace(/^Control.*/i, 'Ctrl').replace(/Left|Right/i, '');
+}
+
+// The keys that are ONLY modifiers. A binding made of these alone is a footgun: the global grab
+// consumes them, so the user's normal shortcuts (Ctrl+C, Alt+Tab, the Start menu) stop working.
+const MODIFIER_TOKENS = ['ControlLeft', 'ControlRight', 'Alt', 'AltGr', 'ShiftLeft', 'ShiftRight', 'Win', 'MetaRight'];
+function isModifierOnly(spec) {
+  const parts = (spec || '').split('+').map((s) => s.trim()).filter(Boolean);
+  return parts.length > 0 && parts.every((p) => MODIFIER_TOKENS.includes(p));
 }
 
 function updateHotkeyPreview() {
@@ -1140,31 +1176,71 @@ function updateHotkeyPreview() {
     : '<span class="hotkey-wait">press keys…</span>';
 }
 
-/* Hotkey recorder: accumulate the actual keys pressed (by physical e.code), then finalize when
-   they're ALL released. This records exactly what you held — no stale modifier flags, and combos
-   of any length are captured, not just "modifiers + one key". */
+// How long after the last key activity to auto-commit the combo. Covers keys whose keyup is never
+// delivered (media/Fn keys, focus loss) so recording can't get stuck waiting for a release.
+const RECORD_COMMIT_MS = 1200;
+
+function clearRecordState() {
+  clearTimeout(state.recordTimer); state.recordTimer = null;
+  state.recordKeys = [];
+  state.recordDown = new Set();
+  state.recordLastCtrlAt = 0;
+  state.recordPhantomCtrl = false;
+}
+
+// Commit whatever combo has been captured so far as the new binding.
+function commitRecording() {
+  if (!state.recording || !state.recordKeys.length) return;
+  let keys = state.recordKeys.slice();
+  // Windows fires a phantom ControlLeft immediately before AltRight (AltGr). If we caught both but
+  // the user really pressed only AltGr, drop the phantom so it doesn't record as "Ctrl+AltGr".
+  if (state.recordPhantomCtrl && keys.includes('AltGr') && keys.includes('ControlLeft')) {
+    keys = keys.filter((k) => k !== 'ControlLeft');
+  }
+  state.config.ptt_key = keys.join('+');
+  state.recording = false;
+  clearRecordState();
+  saveConfig();
+  renderSettings();
+}
+
+// Abandon recording without changing the binding.
+function cancelRecording() {
+  state.recording = false;
+  clearRecordState();
+  renderSettings();
+}
+
+/* Hotkey recorder: accumulate the peak set of keys held (by physical e.code), then commit on the
+   FIRST key release — capturing the whole combo without depending on catching every keyup (the
+   OS/webview sometimes drops them, which is why the old "wait for ALL released" logic could get
+   stuck and appear to "not find" the keys). A safety timer also commits if activity simply stops.
+   Escape cancels. */
 function hotkeyCapture(e) {
   if (!state.recording) return;
   e.preventDefault(); e.stopPropagation();
   if (!state.recordDown) state.recordDown = new Set();
 
   if (e.type === 'keydown') {
+    if (e.code === 'Escape') { cancelRecording(); return; }
     if (e.repeat) return;                       // ignore OS auto-repeat
     const tok = codeToToken(e.code);
     if (!tok) return;                           // unsupported key for a global binding
+    const now = Date.now();
+    if (tok === 'AltGr' && state.recordLastCtrlAt && now - state.recordLastCtrlAt < 60) {
+      state.recordPhantomCtrl = true;           // this Ctrl was the AltGr phantom, not a real press
+    }
+    if (tok === 'ControlLeft') state.recordLastCtrlAt = now;
     if (!state.recordKeys.includes(tok)) state.recordKeys.push(tok);
     state.recordDown.add(e.code);
     updateHotkeyPreview();
+    // (Re)arm the safety commit in case a release event never arrives.
+    clearTimeout(state.recordTimer);
+    state.recordTimer = setTimeout(commitRecording, RECORD_COMMIT_MS);
   } else if (e.type === 'keyup') {
     state.recordDown.delete(e.code);
-    // All keys released and we captured at least one → that's the combo.
-    if (state.recordDown.size === 0 && state.recordKeys.length) {
-      state.config.ptt_key = state.recordKeys.join('+');
-      state.recording = false;
-      state.recordDown = new Set();
-      saveConfig();
-      renderSettings();
-    }
+    // First release → commit the peak combo. Don't wait for the rest (some keyups never arrive).
+    if (state.recordKeys.length) commitRecording();
   }
 }
 

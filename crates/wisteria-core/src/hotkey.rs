@@ -343,6 +343,40 @@ fn parse_key(name: &str) -> Option<Key> {
         "space" => Key::Space,
         "capslock" => Key::CapsLock,
         "tab" => Key::Tab,
+        // Dedicated keys that survive laptop "Fn lock" (unlike F1–F12, which can be hijacked by
+        // firmware for brightness/volume when Fn lock is on). These make reliable PTT bindings.
+        "insert" | "ins" => Key::Insert,
+        "delete" | "del" => Key::Delete,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "pageup" | "pgup" => Key::PageUp,
+        "pagedown" | "pgdn" | "pagedn" => Key::PageDown,
+        "printscreen" | "prtsc" | "prtscn" | "print" | "sysrq" => Key::PrintScreen,
+        "scrolllock" | "scrlk" => Key::ScrollLock,
+        "pause" | "break" => Key::Pause,
+        "numlock" => Key::NumLock,
+        "backquote" | "backtick" | "grave" => Key::BackQuote,
+        "up" | "uparrow" | "arrowup" => Key::UpArrow,
+        "down" | "downarrow" | "arrowdown" => Key::DownArrow,
+        "left" | "leftarrow" | "arrowleft" => Key::LeftArrow,
+        "right" | "rightarrow" | "arrowright" => Key::RightArrow,
+        // Numeric keypad (independent of the top-row digits, so safe to grab globally).
+        "numpad0" | "kp0" => Key::Kp0,
+        "numpad1" | "kp1" => Key::Kp1,
+        "numpad2" | "kp2" => Key::Kp2,
+        "numpad3" | "kp3" => Key::Kp3,
+        "numpad4" | "kp4" => Key::Kp4,
+        "numpad5" | "kp5" => Key::Kp5,
+        "numpad6" | "kp6" => Key::Kp6,
+        "numpad7" | "kp7" => Key::Kp7,
+        "numpad8" | "kp8" => Key::Kp8,
+        "numpad9" | "kp9" => Key::Kp9,
+        "numpadadd" | "kpplus" => Key::KpPlus,
+        "numpadsubtract" | "kpminus" => Key::KpMinus,
+        "numpadmultiply" | "kpmultiply" => Key::KpMultiply,
+        "numpaddivide" | "kpdivide" => Key::KpDivide,
+        "numpadenter" | "kpreturn" | "kpenter" => Key::KpReturn,
+        "numpaddecimal" | "kpdecimal" => Key::KpDecimal,
         "f1" => Key::F1,
         "f2" => Key::F2,
         "f3" => Key::F3,
@@ -373,6 +407,17 @@ mod tests {
     #[test]
     fn invalid_spec_falls_back_to_f8() {
         assert_eq!(parse_combo("nonsense"), vec![Key::F8]);
+    }
+
+    #[test]
+    fn parses_fn_lock_safe_dedicated_keys() {
+        // Keys that survive laptop Fn lock, plus their aliases, all resolve.
+        assert_eq!(parse_combo("Insert"), vec![Key::Insert]);
+        assert_eq!(parse_combo("PrintScreen"), vec![Key::PrintScreen]);
+        assert_eq!(parse_combo("PgUp"), vec![Key::PageUp]);
+        assert_eq!(parse_combo("ScrollLock"), vec![Key::ScrollLock]);
+        assert_eq!(parse_combo("Numpad0"), vec![Key::Kp0]);
+        assert_eq!(parse_combo("Ctrl+Insert"), vec![Key::ControlLeft, Key::Insert]);
     }
 
     #[test]
