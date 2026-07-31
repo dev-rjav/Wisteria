@@ -360,7 +360,13 @@ fn engine_set_enabled(state: State<AppState>, on: bool) {
 fn read_json(path: &Path) -> Option<serde_json::Value> {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| {
+            // Strip a UTF-8 BOM (EF BB BF) that Windows tools like PowerShell 5.1 prepend.
+            // serde_json treats the BOM as an invalid token and rejects the whole file, so
+            // history/config silently vanishes on affected machines.
+            let s = s.strip_prefix('\u{feff}').unwrap_or(&s);
+            serde_json::from_str(s).ok()
+        })
 }
 
 /// Write `text` to `path` atomically (temp file + rename) so a crash or an OS shutdown mid-write
