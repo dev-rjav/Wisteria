@@ -13,12 +13,18 @@
     :root { --magenta: #e879f9; --magenta-light: #f5d0fe; --magenta-deep: #d946ef; --muted: #8a8a90; }
     @keyframes fa-dot { 0%, 100% { opacity: .4; transform: scale(.85) } 50% { opacity: 1; transform: scale(1) } }
 
-    /* The wrap gives the pill a transparent margin so its soft shadow fades out
-       WITHIN the window and never gets hard-clipped into a rectangle at the edge. */
-    .wrap { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; padding: 14px; }
+    /* Column layout: hint sits above the dock pill, both contained fully within the transparent
+       window. Extra window height for hover is allocated above the pill so the pill never jumps.
+       Previously the hint was position:absolute inside the dock with bottom: calc(100% + 8px);
+       backdrop-filter on .dock made it the containing block in Chromium, so the hint rendered
+       partially outside the window bounds and appeared as a ghost shape above the pill on hover. */
+    .wrap {
+      width: 100%; height: 100%; display: flex; flex-direction: column;
+      align-items: center; justify-content: flex-end; gap: 6px; padding: 14px;
+    }
 
     .dock {
-      display: flex; align-items: center; gap: 12px; padding: 0 16px; width: 100%; height: 100%;
+      display: flex; align-items: center; gap: 12px; padding: 0 16px; width: 100%; flex: 1; min-height: 0;
       border-radius: 999px; background: rgba(14, 14, 17, .94); backdrop-filter: blur(14px);
       border: 1px solid rgba(255, 255, 255, .08);
       box-shadow: 0 6px 16px rgba(0, 0, 0, .34);
@@ -26,7 +32,7 @@
     }
 
     /* ---- IDLE: rice-sized ovalish pill, barely there ---- */
-    body.s-idle .wrap { padding: 9px; }
+    body.s-idle .wrap { padding: 9px; gap: 0; }
     body.s-idle .dock {
       gap: 0; padding: 0 8px; background: rgba(14, 14, 17, .82);
       box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
@@ -56,15 +62,17 @@
     .time { font-size: 17px; font-weight: 800; color: var(--magenta-light); line-height: 1; }
     .wds { font-size: 10px; letter-spacing: 1px; color: #7a7a80; font-weight: 600; }
 
-    .hint { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); padding: 7px 12px; border-radius: 10px; background: #17171a; border: 1px solid rgba(255, 255, 255, .1); font-size: 11px; font-weight: 600; letter-spacing: 1px; color: #c9c9ce; white-space: nowrap; display: none; }
+    /* Hint: a sibling of .dock inside .wrap (not a child of .dock). Shown in-flow above the pill
+       so it stays fully within the transparent window bounds and never leaks as a ghost shape. */
+    .hint { padding: 7px 12px; border-radius: 10px; background: #17171a; border: 1px solid rgba(255, 255, 255, .1); font-size: 11px; font-weight: 600; letter-spacing: 1px; color: #c9c9ce; white-space: nowrap; display: none; flex-shrink: 0; }
     body.s-hover .hint { display: block; }
     .hint b { color: var(--magenta); }
   </style>
 </head>
 <body class="s-idle">
   <div class="wrap">
+    <div class="hint" id="hint">HOLD <b id="hint-key">F8</b> TO TALK</div>
     <div class="dock" id="dock" data-tauri-drag-region>
-      <div class="hint" id="hint">HOLD <b id="hint-key">F8</b> TO TALK</div>
       <div class="grip"><i></i><i></i><i></i></div>
       <div class="dot" id="dot"></div>
       <div class="cv-wrap"><canvas id="dock-canvas"></canvas></div>

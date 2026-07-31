@@ -25,7 +25,7 @@ let collapseTimer = null;   // debounce so transient leave events during a resiz
 // (from .wrap padding) keeps the soft shadow from clipping into a rectangle.
 const SIZES = {
   idle:       [96, 34],
-  hover:      [300, 74],
+  hover:      [300, 108],   // taller than before to give the hint room above the pill
   listening:  [480, 116],
   processing: [460, 108],
 };
