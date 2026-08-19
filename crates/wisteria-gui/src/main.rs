@@ -795,9 +795,14 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building Wisteria")
         .run(|_app, event| {
-            // Keep running when windows are hidden; only the tray "Quit" exits (via app.exit).
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+            // Keep running when windows are hidden (implicit exit, `code = None`), so closing the
+            // last window just parks Wisteria in the tray. But a deliberate `app.exit(0)` from the
+            // tray "Quit" carries a code — let that one through, or the app can never be quit except
+            // via Task Manager.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
             }
         });
 }
