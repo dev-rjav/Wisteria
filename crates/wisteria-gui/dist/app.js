@@ -162,7 +162,7 @@ async function listenEngine() {
       if (p.phase === 'processing' && state.active === 'Scratchpad') armScratchPasteGuard();
       if (state.active === 'Dictation') { renderMain(); renderRight(); }
     } else if (p.kind === 'transcript') {
-      addTranscript(p.clean, p.words);
+      addTranscript(p.clean, p.words, p.raw, p.audio);
     } else if (p.kind === 'error') {
       console.error('engine error:', p.message);
     }
@@ -172,13 +172,15 @@ async function listenEngine() {
 
 const HISTORY_CAP = 500;   // keep the in-memory mirror bounded (backend caps its file too)
 
-function addTranscript(text, words) {
+function addTranscript(text, words, raw, audio) {
   const now = new Date();
   const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const ts = now.getTime();   // epoch ms, so history can be grouped by day
+  raw = raw || text;          // fall back to the clean text if no raw was provided
+  audio = audio || null;      // recording filename, or null when audio couldn't be saved
   // Persist via the backend (atomic, append-only) so it can't be clobbered; update the mirror too.
-  invoke('append_history', { time, text, words: words || 0, ts });
-  state.history.unshift({ time, text, ts });
+  invoke('append_history', { time, text, raw, audio, words: words || 0, ts });
+  state.history.unshift({ time, text, raw, audio, ts });
   if (state.history.length > HISTORY_CAP) state.history.length = HISTORY_CAP;
   state.stats.totalWords += (words || 0);
   state.stats.totalDictations += 1;
@@ -303,16 +305,19 @@ function wireDictation() {
   if (btn) btn.onclick = async () => { state.enabled = !state.enabled; await invoke('engine_set_enabled', { on: state.enabled }); renderMain(); renderRight(); };
   paintHistory(state.history);
   const search = $('search');
-  if (search) search.oninput = () => {
-    const q = search.value.trim().toLowerCase();
-    const filtered = q ? state.history.filter((h) => h.text.toLowerCase().includes(q)) : state.history;
-    paintHistory(filtered, q ? `No dictations match "${esc(q)}"` : undefined);
-  };
+  if (search) search.oninput = refreshHistoryView;
 }
 
 /* ---------- history rendering (day grouping + per-item copy) ---------- */
 const COPY_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
 const CHECK_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+// Reformat: re-run the formatter on the raw transcript (a wand/sparkle).
+const REFORMAT_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2M15 22v-2M8 9l1-1M22 15l-2 1M19 3l-1 1M3 19l9-9"/><path d="m14 7 3 3"/></svg>';
+// Re-transcribe: re-run ASR on the saved audio (a rotate arrow).
+const RETRANS_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
+// Play recording: a microphone; swaps to STOP_ICON while playing.
+const MIC_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 19v3"/></svg>';
+const STOP_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 
 // Bucket a timestamp into Today / Yesterday / an absolute date. Entries saved before timestamps
 // existed have no `ts` and fall under "Earlier" (still visible, just not day-labeled).
@@ -351,16 +356,26 @@ function paintHistory(items, emptyMsg) {
   for (const g of groups) {
     html += `<div class="history-day">${esc(g.label)}</div>`;
     for (const h of g.items) {
-      html += `<div class="history-item">
+      const i = flat.length;
+      // Reformat needs the raw transcript (new entries carry it; legacy ones fall back to text).
+      // Re-transcribe + play need a saved recording (absent on legacy entries).
+      const hasAudio = !!h.audio;
+      const acts = [
+        `<button class="history-btn act-reformat" data-i="${i}" title="Reformat with current settings" aria-label="Reformat">${REFORMAT_ICON}</button>`,
+        hasAudio ? `<button class="history-btn act-retrans" data-i="${i}" title="Re-transcribe the recording" aria-label="Re-transcribe">${RETRANS_ICON}</button>` : '',
+        hasAudio ? `<button class="history-btn act-play" data-i="${i}" title="Listen to the recording" aria-label="Play recording">${MIC_ICON}</button>` : '',
+        `<button class="history-btn act-copy" data-i="${i}" title="Copy transcription" aria-label="Copy">${COPY_ICON}</button>`,
+      ].join('');
+      html += `<div class="history-item" data-ts="${h.ts || ''}">
         <span class="history-time">${esc(h.time)}</span>
         <span class="history-text">${esc(h.text)}</span>
-        <button class="history-copy" data-i="${flat.length}" title="Copy transcription" aria-label="Copy">${COPY_ICON}</button>
+        <div class="history-actions">${acts}</div>
       </div>`;
       flat.push(h);
     }
   }
   box.innerHTML = html;
-  box.querySelectorAll('.history-copy').forEach((btn) => {
+  box.querySelectorAll('.act-copy').forEach((btn) => {
     btn.onclick = async () => {
       const ok = await copyText(flat[+btn.dataset.i].text);
       if (!ok) return;
@@ -369,6 +384,115 @@ function paintHistory(items, emptyMsg) {
       setTimeout(() => { btn.innerHTML = COPY_ICON; btn.classList.remove('copied'); }, 1200);
     };
   });
+  box.querySelectorAll('.act-reformat').forEach((btn) => { btn.onclick = () => reformatEntry(flat[+btn.dataset.i], btn); });
+  box.querySelectorAll('.act-retrans').forEach((btn) => { btn.onclick = () => retranscribeEntry(flat[+btn.dataset.i], btn); });
+  box.querySelectorAll('.act-play').forEach((btn) => { btn.onclick = () => playEntry(flat[+btn.dataset.i], btn); });
+}
+
+// Re-render the history list respecting the current search filter (used after an edit so the list
+// reflects the updated text without dropping the user's query).
+function refreshHistoryView() {
+  const search = $('search');
+  const q = search ? search.value.trim().toLowerCase() : '';
+  const filtered = q ? state.history.filter((h) => h.text.toLowerCase().includes(q)) : state.history;
+  paintHistory(filtered, q ? `No dictations match "${esc(q)}"` : undefined);
+}
+
+// Reformat one entry: re-run the formatter (+ dictionary/snippets) over its raw transcript with the
+// user's *current* settings, then persist and repaint. The raw transcript is unchanged.
+async function reformatEntry(h, btn) {
+  setBtnBusy(btn, true);
+  try {
+    const clean = await invoke('reformat_transcript', { raw: h.raw || h.text });
+    if (clean && clean !== h.text) {
+      h.text = clean;
+      await invoke('update_history', { ts: h.ts, text: clean, raw: null });
+      refreshHistoryView();
+    } else {
+      setBtnBusy(btn, false);
+    }
+  } catch (e) {
+    setBtnBusy(btn, false);
+    toast(String(e && e.message || e));
+  }
+}
+
+// Re-transcribe one entry: re-run ASR on its saved recording, reformat the fresh transcript, then
+// persist both the new raw + clean text and repaint.
+async function retranscribeEntry(h, btn) {
+  if (!h.audio) return;
+  setBtnBusy(btn, true);
+  try {
+    const res = await invoke('retranscribe', { audio: h.audio });
+    if (res && (res.clean || res.raw)) {
+      h.raw = res.raw;
+      h.text = res.clean || res.raw;
+      await invoke('update_history', { ts: h.ts, text: h.text, raw: res.raw });
+      refreshHistoryView();
+    } else {
+      setBtnBusy(btn, false);
+    }
+  } catch (e) {
+    setBtnBusy(btn, false);
+    toast(String(e && e.message || e));
+  }
+}
+
+/* ---------- recording playback (one at a time) ---------- */
+let playback = { audio: null, url: null, btn: null };
+
+function stopPlayback() {
+  if (playback.audio) { try { playback.audio.pause(); } catch (_) {} }
+  if (playback.url) { try { URL.revokeObjectURL(playback.url); } catch (_) {} }
+  if (playback.btn) { playback.btn.innerHTML = MIC_ICON; playback.btn.classList.remove('playing'); }
+  playback = { audio: null, url: null, btn: null };
+}
+
+// Play a saved recording. Clicking the currently-playing item stops it; starting a new one stops
+// any other. WAV bytes come over IPC and are wrapped in a Blob so the webview can play them offline.
+async function playEntry(h, btn) {
+  if (playback.btn === btn && playback.audio) { stopPlayback(); return; }
+  stopPlayback();
+  if (!h.audio) return;
+  try {
+    const bytes = await invoke('read_recording', { audio: h.audio });
+    const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const url = URL.createObjectURL(new Blob([arr], { type: 'audio/wav' }));
+    const audio = new Audio(url);
+    playback = { audio, url, btn };
+    btn.innerHTML = STOP_ICON;
+    btn.classList.add('playing');
+    audio.onended = stopPlayback;
+    audio.onerror = () => { stopPlayback(); toast('Could not play this recording.'); };
+    await audio.play();
+  } catch (e) {
+    stopPlayback();
+    toast(String(e && e.message || e));
+  }
+}
+
+// Mark an action button as working (a spinning state); repainting the list clears it.
+function setBtnBusy(btn, busy) {
+  if (!btn) return;
+  btn.classList.toggle('busy', !!busy);
+  btn.disabled = !!busy;
+}
+
+/* ---------- lightweight toast (transient status / errors) ---------- */
+let toastTimer = null;
+function toast(msg) {
+  if (!msg) return;
+  let el = $('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
 }
 
 // Copy via the Clipboard API, with a hidden-textarea fallback for webviews that reject it.

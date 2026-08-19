@@ -18,9 +18,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
-use tracing::{error, info};
-#[cfg(target_os = "linux")]
-use tracing::warn;
+use tracing::{error, info, warn};
 
 use crate::asr::Asr;
 use crate::audio::Recorder;
@@ -68,12 +66,14 @@ impl Phase {
 pub enum EngineEvent {
     /// Pipeline phase changed.
     Phase(Phase),
-    /// A dictation completed. `ms` is total capture→paste latency.
+    /// A dictation completed. `ms` is total capture→paste latency. `audio` is the filename of the
+    /// saved recording (in the app's `recordings/` dir), so history can replay or re-transcribe it.
     Transcript {
         raw: String,
         clean: String,
         ms: u128,
         words: usize,
+        audio: Option<String>,
     },
     /// A non-fatal error occurred (shown to the user, engine keeps running).
     Error(String),
@@ -86,7 +86,38 @@ pub type EventSink = Arc<dyn Fn(EngineEvent) + Send + Sync>;
 enum Cmd {
     SetEnabled(bool),
     Reload(Box<Config>),
+    /// Re-transcribe past audio using the warm ASR model; reply with the raw transcript.
+    Transcribe(Vec<f32>, Sender<Result<String, String>>),
+    /// Re-run the dictionary + formatter + snippet passes on stored raw text; reply with the result.
+    Reformat(String, Sender<Result<String, String>>),
     Shutdown,
+}
+
+/// A cloneable handle for issuing request/response engine commands (re-transcribe / reformat) from
+/// history, off the caller's engine lock so a slow ASR or LLM round-trip never blocks status polls.
+#[derive(Clone)]
+pub struct EngineCommander {
+    cmd_tx: Sender<Cmd>,
+}
+
+impl EngineCommander {
+    /// Re-transcribe `samples` (16 kHz mono `f32`) with the engine's warm ASR model.
+    pub fn transcribe(&self, samples: Vec<f32>) -> Result<String, String> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(Cmd::Transcribe(samples, tx))
+            .map_err(|_| "the dictation engine is not running".to_string())?;
+        rx.recv().map_err(|_| "the dictation engine did not respond".to_string())?
+    }
+
+    /// Re-run the current dictionary + formatter + snippet passes over `raw`.
+    pub fn reformat(&self, raw: String) -> Result<String, String> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(Cmd::Reformat(raw, tx))
+            .map_err(|_| "the dictation engine is not running".to_string())?;
+        rx.recv().map_err(|_| "the dictation engine did not respond".to_string())?
+    }
 }
 
 /// Handle to a running engine. Dropping it shuts the engine down.
@@ -160,6 +191,14 @@ impl Engine {
     /// The config the engine was last told to use.
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// A cloneable command handle for history's re-transcribe / reformat actions. Cloning it lets a
+    /// caller release the engine lock before waiting on the (possibly slow) round-trip.
+    pub fn commander(&self) -> EngineCommander {
+        EngineCommander {
+            cmd_tx: self.cmd_tx.clone(),
+        }
     }
 }
 
@@ -241,6 +280,57 @@ struct Pipeline {
     snippets: crate::snippets::Expander,
     /// "Ask AI" generator (when enabled): keyword-prefixed dictations are answered by the LLM.
     ask_ai: Option<crate::format::AskAi>,
+    /// Where each dictation's audio is saved (for history replay / re-transcription), or `None` if
+    /// the directory couldn't be created.
+    recordings_dir: Option<std::path::PathBuf>,
+}
+
+/// Keep at most this many recordings on disk; older ones are pruned after each save so the folder
+/// can't grow without bound (roughly the history cap the GUI keeps).
+const RECORDINGS_KEEP: usize = 300;
+
+/// The directory dictation recordings are written to (`<app-data>/recordings`), created on demand.
+fn recordings_dir() -> Option<std::path::PathBuf> {
+    let dir = Config::app_data_dir().ok()?.join("recordings");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Save `samples` as a WAV under `dir`, returning the filename to store in history. Prunes old
+/// recordings afterward. Best-effort: any failure just means this dictation has no replayable audio.
+fn save_recording(dir: &Option<std::path::PathBuf>, samples: &[f32]) -> Option<String> {
+    let dir = dir.as_ref()?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let name = format!("rec-{ts}.wav");
+    if let Err(e) = crate::audio::write_wav_16k_mono(&dir.join(&name), samples) {
+        warn!(%e, "failed to save dictation recording (history replay unavailable for it)");
+        return None;
+    }
+    prune_recordings(dir, RECORDINGS_KEEP);
+    Some(name)
+}
+
+/// Delete the oldest `.wav` files in `dir` beyond `keep`. Filenames embed a millisecond timestamp
+/// (`rec-<ms>.wav`), so a lexicographic sort is chronological.
+fn prune_recordings(dir: &std::path::Path, keep: usize) {
+    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map(|x| x == "wav").unwrap_or(false))
+            .collect(),
+        Err(_) => return,
+    };
+    if files.len() <= keep {
+        return;
+    }
+    files.sort();
+    let remove = files.len() - keep;
+    for p in files.into_iter().take(remove) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 /// Build (or rebuild) the pipeline from `config`, emitting warming/error events.
@@ -275,6 +365,7 @@ fn build_pipeline(config: &Config, sink: &EventSink) -> Pipeline {
         dictionary: crate::dictionary::Matcher::new(&config.dictionary),
         snippets: crate::snippets::Expander::new(&config.snippet_keyword, &config.snippets),
         ask_ai: crate::format::AskAi::new(config),
+        recordings_dir: recordings_dir(),
     }
 }
 
@@ -305,6 +396,24 @@ fn worker_loop(
         crossbeam_channel::select! {
             recv(cmd_rx) -> cmd => match cmd {
                 Ok(Cmd::Shutdown) | Err(_) => break,
+                Ok(Cmd::Transcribe(samples, reply)) => {
+                    let res = match &mut pipe.asr {
+                        Some(a) => a.transcribe(&samples).map_err(|e| e.to_string()),
+                        None => Err("the transcription model isn't loaded yet".to_string()),
+                    };
+                    let _ = reply.send(res);
+                }
+                Ok(Cmd::Reformat(raw, reply)) => {
+                    // Mirror the live pipeline: deterministic dictionary correction, then the LLM
+                    // cleanup (falls back to the corrected raw when the formatter is off/unreachable),
+                    // then verbatim snippet expansion.
+                    let corrected = pipe.dictionary.apply(&raw);
+                    let cleaned = match &pipe.formatter {
+                        Some(f) => f.clean(&corrected),
+                        None => corrected,
+                    };
+                    let _ = reply.send(Ok(pipe.snippets.apply(&cleaned)));
+                }
                 Ok(Cmd::SetEnabled(on)) => {
                     enabled = on;
                     // Cancel any in-progress recording/lock when disabled.
@@ -434,6 +543,9 @@ fn handle_utterance(pipe: &mut Pipeline, sink: &EventSink) {
     }
     sink(EngineEvent::Phase(Phase::Processing));
 
+    // Save the raw audio so this dictation can be replayed or re-transcribed from history later.
+    let audio = save_recording(&pipe.recordings_dir, &samples);
+
     let asr = match &mut pipe.asr {
         Some(a) => a,
         None => {
@@ -472,6 +584,7 @@ fn handle_utterance(pipe: &mut Pipeline, sink: &EventSink) {
                         clean: reply,
                         ms: start.elapsed().as_millis(),
                         words,
+                        audio,
                     });
                 }
                 None => sink(EngineEvent::Error(
@@ -500,5 +613,6 @@ fn handle_utterance(pipe: &mut Pipeline, sink: &EventSink) {
         clean,
         ms: start.elapsed().as_millis(),
         words,
+        audio,
     });
 }
