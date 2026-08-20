@@ -357,6 +357,74 @@ fn engine_set_enabled(state: State<AppState>, on: bool) {
     }
 }
 
+// ---------- in-app updates ----------
+
+/// A pending update the user can choose to install (surfaced to the webview).
+#[derive(Serialize)]
+struct UpdateInfo {
+    /// The version being offered (e.g. "0.1.5").
+    version: String,
+    /// The currently-running version, for a "0.1.4 → 0.1.5" prompt.
+    current: String,
+    /// Release notes / changelog body, if the manifest carries one.
+    notes: Option<String>,
+}
+
+/// Ask the update server whether a newer signed build exists. Returns `None` when up to date.
+/// Never errors the UI on a transient network failure beyond the string — the caller treats any
+/// error as "couldn't check right now".
+#[tauri::command]
+async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            current: update.current_version.clone(),
+            notes: update.body.clone(),
+        })),
+        None => Ok(None),
+    }
+}
+
+/// Download and install the pending update, then relaunch into the new version. Progress is pushed
+/// to the webview as `update-progress` events. We re-`check()` here (rather than caching the
+/// `Update` between commands) to keep the command stateless and robust across a slow user prompt.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("No update is available.")?;
+
+    let mut downloaded: usize = 0;
+    let progress_app = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk;
+                let _ = progress_app.emit(
+                    "update-progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            },
+            {
+                let app = app.clone();
+                move || {
+                    let _ = app.emit("update-progress", serde_json::json!({ "done": true }));
+                }
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Relaunch into the freshly-installed binary. `restart` never returns.
+    app.restart();
+}
+
 // ---------- persistence helpers ----------
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
@@ -705,6 +773,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Closing a window hides it (app keeps running in the tray); it never quits the app.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -764,6 +833,26 @@ fn main() {
             let engine = Engine::start(config, sink);
             app.state::<AppState>().engine.lock().unwrap().replace(engine);
             info!("Wisteria GUI started");
+
+            // Silently check for a newer signed build in the background; if one exists, tell the
+            // webview so it can offer a non-blocking "Update & restart" prompt. A missing endpoint
+            // or offline machine just does nothing (local-first: updates are opt-in, never forced).
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+                if let Ok(updater) = update_handle.updater() {
+                    if let Ok(Some(update)) = updater.check().await {
+                        let _ = update_handle.emit(
+                            "update-available",
+                            serde_json::json!({
+                                "version": update.version,
+                                "current": update.current_version,
+                                "notes": update.body,
+                            }),
+                        );
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -791,6 +880,8 @@ fn main() {
             reformat_transcript,
             retranscribe,
             read_recording,
+            check_for_update,
+            install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wisteria")
