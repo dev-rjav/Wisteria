@@ -43,9 +43,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/dev-rjav/Wisteria/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2MjUxMDAzOUI3Nzg5QjkKUldTNWlYZWJBeEFsNW80a2NLbGtGMXQ0eGxsY0t1b2pDZ1FjUjFCZmZaTFlZNStzTG9KNW1lTzgK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"

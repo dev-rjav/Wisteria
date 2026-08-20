@@ -2,6 +2,7 @@
 //! startup latency on push-to-talk; PTT only gates whether incoming samples are buffered.
 //! Captured audio is downmixed to mono and linearly resampled to [`crate::TARGET_SAMPLE_RATE`].
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -134,6 +135,62 @@ impl Recorder {
     }
 }
 
+/// Write 16 kHz mono `f32` `samples` (values in [-1, 1]) to `path` as a 16-bit PCM WAV file, so a
+/// dictation's audio can be replayed from — or re-transcribed out of — history later. Deliberately
+/// dependency-free (a hand-rolled 44-byte header) since we only ever read back what we wrote.
+pub fn write_wav_16k_mono(path: &Path, samples: &[f32]) -> std::io::Result<()> {
+    let sample_rate = TARGET_SAMPLE_RATE;
+    let data_len = (samples.len() as u32) * 2; // 16-bit samples
+    let mut buf = Vec::with_capacity(44 + data_len as usize);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&(36 + data_len).to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&sample_rate.to_le_bytes());
+    buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+    buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_len.to_le_bytes());
+    for &s in samples {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, buf)
+}
+
+/// Read back a WAV written by [`write_wav_16k_mono`] into 16 kHz mono `f32` samples, for
+/// re-transcription. Scans for the `data` chunk (rather than assuming a fixed header length) and
+/// interprets it as little-endian 16-bit PCM.
+pub fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        bail!("not a WAV file");
+    }
+    let mut pos = 12;
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32::from_le_bytes([bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]]) as usize;
+        let body = pos + 8;
+        if id == b"data" {
+            let end = (body + size).min(bytes.len());
+            let mut out = Vec::with_capacity((end - body) / 2);
+            let mut i = body;
+            while i + 1 < end {
+                out.push(i16::from_le_bytes([bytes[i], bytes[i + 1]]) as f32 / 32768.0);
+                i += 2;
+            }
+            return Ok(out);
+        }
+        // Chunks are word-aligned: skip the body plus a pad byte if the size is odd.
+        pos = body + size + (size & 1);
+    }
+    bail!("WAV has no data chunk")
+}
+
 /// Names of all available input devices (for a settings picker). Best-effort: returns an empty
 /// list if the host cannot be queried.
 pub fn input_device_names() -> Vec<String> {
@@ -239,5 +296,19 @@ mod tests {
         let input: Vec<f32> = (0..100).map(|i| i as f32).collect();
         let out = resample_linear(&input, 32_000, 16_000);
         assert!((out.len() as i32 - 50).abs() <= 1);
+    }
+
+    #[test]
+    fn wav_round_trips_through_16bit_pcm() {
+        let samples = vec![0.0, 0.5, -0.5, 1.0, -1.0, 0.25];
+        let path = std::env::temp_dir().join(format!("wisteria-wav-test-{}.wav", std::process::id()));
+        write_wav_16k_mono(&path, &samples).unwrap();
+        let back = read_wav_16k_mono(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(back.len(), samples.len());
+        // 16-bit quantization error is well under 1/32768.
+        for (a, b) in samples.iter().zip(back.iter()) {
+            assert!((a - b).abs() < 1e-3, "{a} vs {b}");
+        }
     }
 }

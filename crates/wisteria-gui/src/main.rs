@@ -31,6 +31,8 @@ struct AppState {
     /// Dedicated, append-only dictation history + all-time counters (separate from gui-state so a
     /// settings save can never clobber it).
     history_path: PathBuf,
+    /// Directory holding per-dictation WAV recordings (for history replay / re-transcription).
+    recordings_dir: PathBuf,
     /// Last known engine phase tag, so the UI can query it on load.
     phase: Arc<Mutex<String>>,
     /// Cancel flags for in-flight model pulls, keyed by model name.
@@ -355,6 +357,74 @@ fn engine_set_enabled(state: State<AppState>, on: bool) {
     }
 }
 
+// ---------- in-app updates ----------
+
+/// A pending update the user can choose to install (surfaced to the webview).
+#[derive(Serialize)]
+struct UpdateInfo {
+    /// The version being offered (e.g. "0.1.5").
+    version: String,
+    /// The currently-running version, for a "0.1.4 → 0.1.5" prompt.
+    current: String,
+    /// Release notes / changelog body, if the manifest carries one.
+    notes: Option<String>,
+}
+
+/// Ask the update server whether a newer signed build exists. Returns `None` when up to date.
+/// Never errors the UI on a transient network failure beyond the string — the caller treats any
+/// error as "couldn't check right now".
+#[tauri::command]
+async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            current: update.current_version.clone(),
+            notes: update.body.clone(),
+        })),
+        None => Ok(None),
+    }
+}
+
+/// Download and install the pending update, then relaunch into the new version. Progress is pushed
+/// to the webview as `update-progress` events. We re-`check()` here (rather than caching the
+/// `Update` between commands) to keep the command stateless and robust across a slow user prompt.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("No update is available.")?;
+
+    let mut downloaded: usize = 0;
+    let progress_app = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk;
+                let _ = progress_app.emit(
+                    "update-progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            },
+            {
+                let app = app.clone();
+                move || {
+                    let _ = app.emit("update-progress", serde_json::json!({ "done": true }));
+                }
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Relaunch into the freshly-installed binary. `restart` never returns.
+    app.restart();
+}
+
 // ---------- persistence helpers ----------
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
@@ -435,7 +505,16 @@ fn get_history(state: State<AppState>) -> serde_json::Value {
 /// the read-modify-write in Rust means the frontend can never overwrite the whole history with a
 /// stale in-memory copy (the bug that lost history across restarts).
 #[tauri::command]
-fn append_history(state: State<AppState>, time: String, text: String, words: u64, ts: i64) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn append_history(
+    state: State<AppState>,
+    time: String,
+    text: String,
+    raw: String,
+    audio: Option<String>,
+    words: u64,
+    ts: i64,
+) -> Result<(), String> {
     const CAP: usize = 500;
     let mut v = load_history_value(&state.history_path, &state.gui_state_path);
     let obj = v.as_object_mut().ok_or("history document is not an object")?;
@@ -445,8 +524,10 @@ fn append_history(state: State<AppState>, time: String, text: String, words: u64
         .or_insert_with(|| serde_json::json!([]));
     if let Some(arr) = hist.as_array_mut() {
         // `ts` is epoch milliseconds; it lets the UI group entries by day (Today/Yesterday/date).
-        // `time` stays as the human display string for the row.
-        arr.insert(0, serde_json::json!({ "time": time, "text": text, "ts": ts }));
+        // `time` stays as the human display string for the row. `raw` is the pre-formatting
+        // transcript (so history can reformat it) and `audio` the recording filename (for replay /
+        // re-transcription); both are absent on legacy rows.
+        arr.insert(0, serde_json::json!({ "time": time, "text": text, "raw": raw, "audio": audio, "ts": ts }));
         if arr.len() > CAP {
             arr.truncate(CAP);
         }
@@ -459,6 +540,91 @@ fn append_history(state: State<AppState>, time: String, text: String, words: u64
 
     let text_out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
     atomic_write(&state.history_path, &text_out).map_err(|e| e.to_string())
+}
+
+/// Update an existing history row (identified by its `ts`) after a reformat or re-transcription.
+/// Overwrites the displayed `text`, and the stored `raw` when the transcript itself changed. Leaves
+/// the all-time counters untouched — editing a dictation isn't a new dictation.
+#[tauri::command]
+fn update_history(state: State<AppState>, ts: i64, text: String, raw: Option<String>) -> Result<(), String> {
+    let mut v = load_history_value(&state.history_path, &state.gui_state_path);
+    let obj = v.as_object_mut().ok_or("history document is not an object")?;
+    if let Some(arr) = obj.get_mut("history").and_then(|h| h.as_array_mut()) {
+        for item in arr.iter_mut() {
+            if item.get("ts").and_then(|t| t.as_i64()) == Some(ts) {
+                if let Some(o) = item.as_object_mut() {
+                    o.insert("text".into(), serde_json::json!(text));
+                    if let Some(r) = &raw {
+                        o.insert("raw".into(), serde_json::json!(r));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    let text_out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    atomic_write(&state.history_path, &text_out).map_err(|e| e.to_string())
+}
+
+/// Result of re-transcribing a stored recording: the fresh raw transcript plus its formatted form.
+#[derive(Serialize)]
+struct Retranscribed {
+    raw: String,
+    clean: String,
+}
+
+/// A grab of the engine's command handle, released as soon as we have it so the (possibly slow)
+/// ASR/LLM round-trip below never holds the engine lock that status polls also need.
+fn engine_commander(state: &State<AppState>) -> Result<wisteria_core::engine::EngineCommander, String> {
+    state
+        .engine
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|e| e.commander())
+        .ok_or_else(|| "The dictation engine is still starting — try again in a moment.".to_string())
+}
+
+/// Re-run the current formatter (and dictionary/snippet passes) over a stored raw transcript.
+#[tauri::command]
+fn reformat_transcript(state: State<AppState>, raw: String) -> Result<String, String> {
+    if raw.trim().is_empty() {
+        return Err("This dictation has no raw transcript to reformat.".into());
+    }
+    engine_commander(&state)?.reformat(raw)
+}
+
+/// Re-transcribe a stored recording with the warm ASR model, then format the fresh transcript.
+#[tauri::command]
+fn retranscribe(state: State<AppState>, audio: String) -> Result<Retranscribed, String> {
+    let name = safe_recording_name(&audio)?;
+    let path = state.recordings_dir.join(name);
+    let samples = wisteria_core::audio::read_wav_16k_mono(&path)
+        .map_err(|e| format!("couldn't read the recording: {e}"))?;
+    let commander = engine_commander(&state)?;
+    let raw = commander.transcribe(samples)?;
+    let clean = commander.reformat(raw.clone())?;
+    Ok(Retranscribed { raw, clean })
+}
+
+/// Return a stored recording's WAV bytes so the frontend can play it back.
+#[tauri::command]
+fn read_recording(state: State<AppState>, audio: String) -> Result<Vec<u8>, String> {
+    let name = safe_recording_name(&audio)?;
+    std::fs::read(state.recordings_dir.join(name)).map_err(|e| e.to_string())
+}
+
+/// Validate an untrusted recording filename from the frontend: it must be a bare filename (no path
+/// separators or `..`), so a crafted value can never escape the recordings directory.
+fn safe_recording_name(audio: &str) -> Result<String, String> {
+    let name = Path::new(audio)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("invalid recording name")?;
+    if name != audio || name.is_empty() {
+        return Err("invalid recording name".into());
+    }
+    Ok(name.to_string())
 }
 
 /// Show and focus the main window (from the tray).
@@ -607,6 +773,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Closing a window hides it (app keeps running in the tray); it never quits the app.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -623,6 +790,8 @@ fn main() {
             let config_path = data_dir.join("config.toml");
             let gui_state_path = data_dir.join("gui-state.json");
             let history_path = data_dir.join("history.json");
+            let recordings_dir = data_dir.join("recordings");
+            let _ = std::fs::create_dir_all(&recordings_dir);
             let phase = Arc::new(Mutex::new(Phase::Warming.tag().to_string()));
 
             // Split any legacy history out of gui-state.json into its own file before the frontend
@@ -640,6 +809,7 @@ fn main() {
                 config_path,
                 gui_state_path,
                 history_path,
+                recordings_dir,
                 phase: Arc::clone(&phase),
                 pulls: Mutex::new(HashMap::new()),
             });
@@ -652,8 +822,8 @@ fn main() {
                         *phase_for_sink.lock().unwrap() = p.tag().to_string();
                         serde_json::json!({ "kind": "phase", "phase": p.tag() })
                     }
-                    EngineEvent::Transcript { raw, clean, ms, words } => serde_json::json!({
-                        "kind": "transcript", "raw": raw, "clean": clean, "ms": ms, "words": words
+                    EngineEvent::Transcript { raw, clean, ms, words, audio } => serde_json::json!({
+                        "kind": "transcript", "raw": raw, "clean": clean, "ms": ms, "words": words, "audio": audio
                     }),
                     EngineEvent::Error(m) => serde_json::json!({ "kind": "error", "message": m }),
                 };
@@ -663,6 +833,26 @@ fn main() {
             let engine = Engine::start(config, sink);
             app.state::<AppState>().engine.lock().unwrap().replace(engine);
             info!("Wisteria GUI started");
+
+            // Silently check for a newer signed build in the background; if one exists, tell the
+            // webview so it can offer a non-blocking "Update & restart" prompt. A missing endpoint
+            // or offline machine just does nothing (local-first: updates are opt-in, never forced).
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+                if let Ok(updater) = update_handle.updater() {
+                    if let Ok(Some(update)) = updater.check().await {
+                        let _ = update_handle.emit(
+                            "update-available",
+                            serde_json::json!({
+                                "version": update.version,
+                                "current": update.current_version,
+                                "notes": update.body,
+                            }),
+                        );
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -686,13 +876,24 @@ fn main() {
             save_gui_state,
             get_history,
             append_history,
+            update_history,
+            reformat_transcript,
+            retranscribe,
+            read_recording,
+            check_for_update,
+            install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wisteria")
         .run(|_app, event| {
-            // Keep running when windows are hidden; only the tray "Quit" exits (via app.exit).
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+            // Keep running when windows are hidden (implicit exit, `code = None`), so closing the
+            // last window just parks Wisteria in the tray. But a deliberate `app.exit(0)` from the
+            // tray "Quit" carries a code — let that one through, or the app can never be quit except
+            // via Task Manager.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
             }
         });
 }

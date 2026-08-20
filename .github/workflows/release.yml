@@ -1,8 +1,13 @@
 name: Release
 
-# Builds prebuilt installers for every platform and attaches them to the GitHub Release for a
-# pushed version tag (e.g. `v0.1.1`). Also runnable manually (workflow_dispatch) to smoke-test the
-# builds without publishing.
+# Builds prebuilt installers for every platform, code-signs the Windows installer via SignPath
+# (free for OSS), and publishes an auto-update manifest (latest.json) — all attached to the GitHub
+# Release for a pushed version tag (e.g. `v0.1.5`). Also runnable manually (workflow_dispatch) to
+# smoke-test the builds without publishing.
+#
+# Required repository configuration (see SIGNING.md):
+#   Secrets: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD, SIGNPATH_API_TOKEN
+#   Variables: SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG
 on:
   push:
     tags: ['v*']
@@ -11,34 +16,28 @@ on:
 permissions:
   contents: write
 
+env:
+  # The Tauri updater signs the *update payload* with this minisign key (separate from the
+  # Authenticode/SignPath cert). The matching public key is baked into tauri.conf.json.
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
 jobs:
-  build:
-    name: Build (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ubuntu-24.04 (glibc 2.39): the prebuilt ONNX Runtime in `ort_sys` references glibc
-          # >=2.38 symbols (__isoc23_strtoull / __isoc23_strtol), so linking on 22.04 (glibc 2.35)
-          # fails with "undefined symbol". 24.04 provides them.
-          - os: ubuntu-24.04
-            bundles: 'deb,appimage'
-          - os: windows-latest
-            bundles: 'nsis'
-    runs-on: ${{ matrix.os }}
+  # ---------------------------------------------------------------------------
+  # Linux: deb + AppImage. No OS code-signing; the AppImage is the updater target and is signed
+  # with the Tauri updater key at build time.
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Build (linux)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: '. -> target'
 
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -53,9 +52,9 @@ jobs:
         working-directory: crates/wisteria-gui
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
-        run: cargo tauri build --bundles ${{ matrix.bundles }}
+        run: cargo tauri build --bundles deb,appimage
 
-      - name: Stage assets with stable names
+      - name: Stage + sign updater artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -63,19 +62,150 @@ jobs:
           shopt -s nullglob
           for f in target/release/bundle/appimage/*.AppImage; do cp -v "$f" "dist/Wisteria-x86_64.AppImage"; done
           for f in target/release/bundle/deb/*.deb;          do cp -v "$f" "dist/Wisteria-amd64.deb"; done
-          for f in target/release/bundle/nsis/*-setup.exe;   do cp -v "$f" "dist/Wisteria-Setup-Windows-x64.exe"; done
+          # Re-sign the *staged* AppImage so the signature matches the exact bytes we publish.
+          cargo tauri signer sign "dist/Wisteria-x86_64.AppImage"
           echo "Staged:"; ls -la dist
 
-      - name: Upload build artifacts
+      - name: Upload updater signature (for manifest job)
         uses: actions/upload-artifact@v4
         with:
-          name: wisteria-${{ matrix.os }}
-          path: dist/*
+          name: sig-linux
+          path: dist/Wisteria-x86_64.AppImage.sig
           if-no-files-found: error
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/Wisteria-x86_64.AppImage
+            dist/Wisteria-amd64.deb
+          fail_on_unmatched_files: true
+
+  # ---------------------------------------------------------------------------
+  # Windows: NSIS installer, Authenticode-signed by SignPath, then the updater signature is
+  # regenerated over the SIGNED bytes (signing changes the file, so the build-time .sig is stale).
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Build (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Build NSIS installer (unsigned)
+        working-directory: crates/wisteria-gui
+        run: cargo tauri build --bundles nsis
+
+      - name: Stage installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          shopt -s nullglob
+          for f in target/release/bundle/nsis/*-setup.exe; do cp -v "$f" "dist/Wisteria-Setup-Windows-x64.exe"; done
+          echo "Staged:"; ls -la dist
+
+      - name: Upload unsigned installer (for SignPath)
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned
+          path: dist/Wisteria-Setup-Windows-x64.exe
+          if-no-files-found: error
+
+      # SignPath pulls the uploaded workflow artifact, Authenticode-signs it under the configured
+      # policy, and returns the signed installer to `signed/`. Requires the SignPath GitHub App to
+      # be installed on the repo. See SIGNING.md.
+      - name: Sign with SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Regenerate updater signature over the SIGNED installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -v "signed/Wisteria-Setup-Windows-x64.exe" "dist/Wisteria-Setup-Windows-x64.exe"
+          # The Authenticode signing changed the bytes — sign the final, published file.
+          cargo tauri signer sign "dist/Wisteria-Setup-Windows-x64.exe"
+          ls -la dist
+
+      - name: Upload updater signature (for manifest job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sig-windows
+          path: dist/Wisteria-Setup-Windows-x64.exe.sig
+          if-no-files-found: error
+
+      - name: Attach signed installer to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Wisteria-Setup-Windows-x64.exe
+          fail_on_unmatched_files: true
+
+  # ---------------------------------------------------------------------------
+  # Compose the Tauri v2 update manifest (latest.json) from both platforms' signatures and attach it
+  # to the Release. The updater endpoint in tauri.conf.json points at this file.
+  # ---------------------------------------------------------------------------
+  manifest:
+    name: Publish update manifest
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sig-linux
+          path: sigs
+      - uses: actions/download-artifact@v4
+        with:
+          name: sig-windows
+          path: sigs
+
+      - name: Build latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"          # e.g. v0.1.5
+          VERSION="${TAG#v}"                # e.g. 0.1.5
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          WIN_SIG="$(cat sigs/Wisteria-Setup-Windows-x64.exe.sig)"
+          LINUX_SIG="$(cat sigs/Wisteria-x86_64.AppImage.sig)"
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "See the release notes at https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "${WIN_SIG}",
+                "url": "${BASE}/Wisteria-Setup-Windows-x64.exe"
+              },
+              "linux-x86_64": {
+                "signature": "${LINUX_SIG}",
+                "url": "${BASE}/Wisteria-x86_64.AppImage"
+              }
+            }
+          }
+          EOF
+          echo "----- latest.json -----"; cat latest.json
+
+      - name: Attach latest.json to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: latest.json
           fail_on_unmatched_files: true
