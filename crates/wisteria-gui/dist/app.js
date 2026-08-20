@@ -101,6 +101,7 @@ async function init() {
     await loadFromBackend();
     wireSidebar();
     await listenEngine().catch((e) => console.error('listenEngine failed:', e));
+    await wireUpdates().catch((e) => console.error('wireUpdates failed:', e));
     wireFocusRefresh();
     renderAll();
   } catch (e) {
@@ -493,6 +494,45 @@ function toast(msg) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+}
+
+// ---- In-app updates ---------------------------------------------------------
+// The Rust side checks GitHub Releases on startup and emits `update-available` when a newer signed
+// build exists; installing streams `update-progress` and then relaunches. Updates are opt-in — we
+// only ever surface a dismissible banner, never auto-install.
+async function wireUpdates() {
+  await listen('update-available', (e) => showUpdateBanner(e.payload || {}));
+  await listen('update-progress', (e) => {
+    const p = e.payload || {};
+    const label = $('update-status');
+    if (!label) return;
+    if (p.done) { label.textContent = 'Restarting…'; return; }
+    if (p.total) { label.textContent = `Downloading… ${Math.round((p.downloaded / p.total) * 100)}%`; }
+    else { label.textContent = 'Downloading…'; }
+  });
+}
+
+function showUpdateBanner(info) {
+  if ($('update-banner')) return; // already shown this session
+  const el = document.createElement('div');
+  el.id = 'update-banner';
+  el.className = 'update-banner';
+  const to = info.version ? esc(info.version) : 'a new version';
+  const from = info.current ? ` from ${esc(info.current)}` : '';
+  el.innerHTML =
+    `<span class="update-text">🌸 Wisteria ${to} is available${from}.</span>` +
+    `<span id="update-status" class="update-status"></span>` +
+    `<button id="update-install" class="update-btn">Update &amp; restart</button>` +
+    `<button id="update-dismiss" class="update-x" title="Dismiss">✕</button>`;
+  document.body.appendChild(el);
+  $('update-dismiss').onclick = () => el.remove();
+  $('update-install').onclick = async () => {
+    const btn = $('update-install');
+    btn.disabled = true;
+    $('update-status').textContent = 'Starting…';
+    try { await invoke('install_update'); }
+    catch (err) { $('update-status').textContent = ''; btn.disabled = false; toast('Update failed: ' + (err && err.message || err)); }
+  };
 }
 
 // Copy via the Clipboard API, with a hidden-textarea fallback for webviews that reject it.
