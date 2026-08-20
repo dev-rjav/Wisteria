@@ -132,8 +132,17 @@ select option { background: #17171a; color: var(--ink); }
 .history-btn:disabled { cursor: default; }
 .history-btn.copied { opacity: 1; color: #4ade80; border-color: rgba(74, 222, 128, .5); background: rgba(74, 222, 128, .12); }
 .history-btn.playing { opacity: 1; color: var(--magenta-light); border-color: rgba(232, 121, 249, .55); background: rgba(232, 121, 249, .14); }
-.history-btn.busy { opacity: 1; color: var(--magenta-light); }
-.history-btn.busy svg { animation: hb-spin .8s linear infinite; }
+.history-btn.busy { opacity: 1; }
+/* Hide the pressed action's icon and show a purple ring spinner in its place. */
+.history-btn.busy svg { display: none; }
+.history-btn.busy::after {
+  content: '';
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  border: 2px solid rgba(167, 139, 250, .25);
+  border-top-color: #a78bfa;
+  animation: hb-spin .7s linear infinite;
+}
 @keyframes hb-spin { to { transform: rotate(360deg); } }
 .empty { padding: 30px; text-align: center; color: var(--muted-2); font-size: 14px; letter-spacing: 1px; }
 
